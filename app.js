@@ -32,6 +32,28 @@ function catClass(cat)     { return (CATEGORIES[cat] || CATEGORIES['Other']).css
 function catBadgeHtml(cat) { const cls = catClass(cat); const lbl = (CATEGORIES[cat] || {label:cat}).label; return `<span class="cat-badge ${cls}">${lbl}</span>`; }
 function isExamCat(cat)    { return cat === 'Exam'; }
 
+/**
+ * Infer a category from a component name string.
+ * Uses keyword matching in priority order.
+ */
+function inferCategory(name) {
+  const n = (name || '').toLowerCase();
+  if (n.includes('centrally-timetabled examination') ||
+      n.includes('take home examination') ||
+      n.includes('take-home examination') ||
+      n.includes('oral examination') ||
+      n.includes('oral exam') ||
+      n.includes('final exam') ||
+      n.includes('online examination') ||
+      n.includes('in-person examination') ||
+      (n.includes('examination') && !n.includes('pre-examination'))) return 'Exam';
+  if (n.includes('essay') || n.includes('dissertation') || n.includes('literature review') || n.includes('book chapter') || n.includes('article review')) return 'Essays';
+  if (n.includes('test') || n.includes('quiz') || n.includes('mcq') || n.includes('multiple choice') || n.includes('in-class') || n.includes('class test')) return 'Class Test';
+  if (n.includes('coursework') || n.includes('assignment') || n.includes('report') || n.includes('project') || n.includes('lab') || n.includes('portfolio') ||
+      n.includes('presentation') || n.includes('poster') || n.includes('dissertation')) return 'Coursework';
+  return 'Coursework';
+}
+
 function gradeColor(m) { if(m>=70)return'#059669'; if(m>=60)return'#2563EB'; if(m>=50)return'#D97706'; if(m>=40)return'#EA580C'; return'#DC2626'; }
 function gradeClass(m) { if(m>=70)return'First'; if(m>=60)return'2:1'; if(m>=50)return'2:2'; if(m>=40)return'Third'; return'Fail'; }
 
@@ -102,7 +124,7 @@ function migrateData() {
         if (!c.duration) c.duration = '';
         if (!c.location) c.location = '';
         if (!c.category) c.category = 'Coursework';
-        if (c.category === 'Coursework & Essays') c.category = 'Coursework'; // migrate old split
+        if (c.category === 'Coursework & Essays') c.category = 'Coursework';
       });
     });
     delete yr.dates;
@@ -360,7 +382,21 @@ function saveModEdit() {
     const mod=yr.modules.find(m=>m.id===meModId); mod.code=code; mod.name=name; mod.cats=cats;
   } else {
     const nid=makeId();
-    yr.modules.push({id:nid,code,name,cats,components:[]});
+    // Auto-populate components from module dict if available
+    const dictEntry = ALL_MODULES_DICT[code];
+    const components = [];
+    if (dictEntry && dictEntry.components && dictEntry.components.length > 0) {
+      dictEntry.components.forEach(c => {
+        components.push({
+          id: makeId(),
+          name: c.name,
+          weight: c.weight,
+          category: inferCategory(c.name),
+          date: '', time: '', duration: '', location: ''
+        });
+      });
+    }
+    yr.modules.push({id:nid, code, name, cats, components, url: dictEntry ? dictEntry.url : ''});
     if (!yr.checklist) yr.checklist={};
     if (!yr.targetGrades) yr.targetGrades={};
     yr.checklist[nid]={topics:[],done:{}};
@@ -789,6 +825,12 @@ function buildModules(yr) {
     if(total!==null){pillTxt=total.toFixed(1)+'%';pillStyle=`color:${gradeColor(total)};background:${gradeColor(total)}18;border-color:${gradeColor(total)}44`;}
     else if(partial!==null){pillTxt=`${partial.toFixed(1)} / ${ew} pts`;pillStyle='color:var(--tx2);';}
 
+    // Module URL link button (from Warwick catalogue)
+    const modUrl = mod.url || (ALL_MODULES_DICT[mod.code] ? ALL_MODULES_DICT[mod.code].url : '');
+    const urlBtn = modUrl
+      ? `<a href="${modUrl}" target="_blank" rel="noopener" class="icon-btn mod-link-btn" title="Open Warwick module page" onclick="event.stopPropagation()" style="font-size:14px;text-decoration:none;display:inline-flex;align-items:center;margin-right:4px">🔗</a>`
+      : '';
+
     let compRows='';
     mod.components.forEach(c=>{
       const mv=yr.marks[c.id]!==undefined?yr.marks[c.id]:'';
@@ -821,12 +863,19 @@ function buildModules(yr) {
       <button class="btn btn-ghost btn-sm" onclick="clearModScores('${yr.id}','${mod.id}')">Scores</button>
       <button class="btn btn-danger btn-sm" onclick="clearModAll('${yr.id}','${mod.id}')">All</button></div>`;
 
+    // Assessment split badge (if available in dict)
+    const dictEntry = ALL_MODULES_DICT[mod.code];
+    const splitBadge = dictEntry && dictEntry.assessmentSplit
+      ? `<span style="font-family:var(--fm);font-size:10px;color:var(--tx3);margin-left:6px;background:var(--bg2);padding:2px 6px;border-radius:4px;border:1px solid var(--b2)">${dictEntry.assessmentSplit}</span>`
+      : '';
+
     html+=`<div class="card" id="modcard-${yr.id}-${mod.id}">
       <div class="mod-hdr" onclick="toggleCard('modcard-${yr.id}-${mod.id}')">
         <span class="mod-code">${mod.code}</span>
-        <span class="mod-name">${mod.name}</span>
+        <span class="mod-name">${mod.name}${splitBadge}</span>
         <span class="mod-pill" style="${pillStyle}">${pillTxt}</span>
         <span class="mod-cats">${mod.cats} CATS</span>
+        ${urlBtn}
         <button class="icon-btn" onclick="event.stopPropagation();openModEdit('${yr.id}','${mod.id}')" title="Edit module" style="margin-right:4px">✎</button>
         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
@@ -1081,6 +1130,8 @@ function showToast(msg){const t=document.getElementById('toast');t.textContent=m
 // ── Course Picker ──
 let cpSelectedDept = null, cpSelectedCourse = null, cpCurrentStep = 0;
 
+// ALL_MODULES_DICT: keyed by module code (uppercase).
+// Each entry: { name, cats, url, assessmentSplit, components: [{name, weight}] }
 const ALL_MODULES_DICT = {};
 
 function buildModuleDict() {
@@ -1090,7 +1141,24 @@ function buildModuleDict() {
       Object.values(c.years).forEach(yr => {
         if (yr.core) {
           yr.core.forEach(m => {
-            ALL_MODULES_DICT[m.code.toUpperCase()] = { name: m.name, cats: m.credits };
+            const code = m.code.toUpperCase();
+            // Only set once per code (first occurrence wins, they're the same module)
+            if (!ALL_MODULES_DICT[code]) {
+              const asm = m.assessment || {};
+              const components = [];
+              if (asm.ok && asm.components && asm.components.length > 0) {
+                asm.components.forEach(comp => {
+                  components.push({ name: comp.name, weight: comp.weighting });
+                });
+              }
+              ALL_MODULES_DICT[code] = {
+                name: m.name,
+                cats: m.credits,
+                url: asm.url || '',
+                assessmentSplit: asm.assessmentSplit || '',
+                components,
+              };
+            }
           });
         }
       });
@@ -1119,9 +1187,10 @@ function setupAutoFill() {
   if (codeInp && nameInp && catsInp) {
     codeInp.addEventListener('input', (e) => {
       const code = e.target.value.trim().toUpperCase();
-      if (ALL_MODULES_DICT[code]) {
-        nameInp.value = ALL_MODULES_DICT[code].name;
-        catsInp.value = ALL_MODULES_DICT[code].cats;
+      const entry = ALL_MODULES_DICT[code];
+      if (entry) {
+        nameInp.value = entry.name;
+        catsInp.value = entry.cats;
       }
     });
 
@@ -1138,17 +1207,9 @@ function setupAutoFill() {
   const compNameInp = document.getElementById('ce-name');
   if (compNameInp) {
     compNameInp.addEventListener('input', (e) => {
-      const val = e.target.value.toLowerCase();
-      let targetCat = null;
-      if (val.includes('exam')) targetCat = 'Exam';
-      else if (val.includes('test') || val.includes('quiz')) targetCat = 'Class Test';
-      else if (val.includes('essay')) targetCat = 'Essays';
-      else if (val.includes('coursework') || val.includes('report') || val.includes('assignment') || val.includes('project')) targetCat = 'Coursework';
-      
-      if (targetCat) {
-        const btn = document.querySelector(`.cat-sel-btn[data-cat="${targetCat}"]`);
-        if (btn) selectCat(btn);
-      }
+      const cat = inferCategory(e.target.value);
+      const btn = document.querySelector(`.cat-sel-btn[data-cat="${cat}"]`);
+      if (btn) selectCat(btn);
     });
   }
 }
@@ -1277,11 +1338,12 @@ function cpRenderPreview() {
   const c = cpSelectedCourse;
   const yearMods = cpGetCoreModules(c);
   const totalMods = yearMods.reduce((s,y) => s + y.modules.length, 0);
+  const totalWithAssessments = yearMods.reduce((s,y) => s + y.modules.filter(m => m.assessment && m.assessment.ok && m.assessment.components && m.assessment.components.length > 0).length, 0);
 
   document.getElementById('cp-preview-header').innerHTML = `
     <div class="cp-preview-header-title">${c.course}</div>
     <div class="cp-preview-header-meta">${c.department} · ${c.qualification} · ${c.duration}</div>
-    <div style="margin-top:8px;font-family:var(--fm);font-size:10px;color:var(--accent-mid)">${totalMods} core module${totalMods!==1?'s':''} across ${yearMods.length} year${yearMods.length!==1?'s':''}</div>
+    <div style="margin-top:8px;font-family:var(--fm);font-size:10px;color:var(--accent-mid)">${totalMods} core module${totalMods!==1?'s':''} across ${yearMods.length} year${yearMods.length!==1?'s':''} · ${totalWithAssessments} with full assessment data</div>
   `;
 
   let listHtml = '';
@@ -1291,12 +1353,33 @@ function cpRenderPreview() {
     yearMods.forEach(ym => {
       listHtml += `<div class="cp-preview-yr">${ym.yearLabel}</div>`;
       ym.modules.forEach(m => {
+        const asm = m.assessment || {};
+        const hasComponents = asm.ok && asm.components && asm.components.length > 0;
+        const splitBadge = asm.assessmentSplit
+          ? `<span style="font-family:var(--fm);font-size:9px;color:var(--tx3);background:var(--bg2);padding:1px 5px;border-radius:3px;border:1px solid var(--b2);margin-left:4px">${asm.assessmentSplit}</span>`
+          : '';
+        const urlLink = asm.url
+          ? `<a href="${asm.url}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:10px;color:var(--accent-mid);text-decoration:none;margin-left:4px" title="Open module page">🔗</a>`
+          : '';
         listHtml += `<div class="cp-preview-mod">
           <span class="cp-preview-code">${m.code}</span>
-          <span class="cp-preview-name">${m.name}</span>
+          <span class="cp-preview-name">${m.name}${splitBadge}${urlLink}</span>
           <span class="cp-preview-cats">${(m.credits !== null && !isNaN(m.credits)) ? m.credits : 15} CATS</span>
           <span class="cp-preview-type">Core</span>
         </div>`;
+        // Show assessment components breakdown if available
+        if (hasComponents) {
+          listHtml += `<div style="padding:0 0 6px 0;margin-left:0">`;
+          asm.components.forEach(comp => {
+            const cat = inferCategory(comp.name);
+            listHtml += `<div style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 16px;font-family:var(--fm);font-size:10px;color:var(--tx3)">
+              ${catBadgeHtml(cat)}
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${comp.name}</span>
+              <span style="color:var(--accent-mid);font-weight:600;flex-shrink:0">${comp.weighting}%</span>
+            </div>`;
+          });
+          listHtml += `</div>`;
+        }
       });
     });
   }
@@ -1353,7 +1436,7 @@ function cpConfirm() {
   }
   APP.activeYear = APP.years[0].id;
 
-  // Distribute populated years
+  // Distribute populated years — importing full components from assessment data
   populatedKeys.forEach(yrKey => {
     let targetIdx = 0;
     if (yrKey.startsWith('Year')) {
@@ -1374,7 +1457,31 @@ function cpConfirm() {
       if (appYear.modules.find(existing => existing.code === m.code)) return;
       const nid = makeId();
       const safeCats = (m.credits !== null && !isNaN(m.credits)) ? m.credits : 15;
-      appYear.modules.push({ id: nid, code: m.code, name: m.name, cats: safeCats, components: [] });
+
+      // Build components from assessment data
+      const components = [];
+      const asm = m.assessment || {};
+      if (asm.ok && asm.components && asm.components.length > 0) {
+        asm.components.forEach(comp => {
+          components.push({
+            id: makeId(),
+            name: comp.name,
+            weight: comp.weighting,
+            category: inferCategory(comp.name),
+            date: '', time: '', duration: '', location: ''
+          });
+        });
+      }
+
+      appYear.modules.push({
+        id: nid,
+        code: m.code,
+        name: m.name,
+        cats: safeCats,
+        components,
+        url: asm.url || '',
+      });
+
       if (!appYear.checklist) appYear.checklist = {};
       appYear.checklist[nid] = { topics: [], done: {} };
     });
