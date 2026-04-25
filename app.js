@@ -18,6 +18,42 @@ const COLOUR_PRESETS = [
   { name:'Crimson', hex:'#7F1D1D', mid:'#DC2626', light:'#FCA5A5', bg:'#FEF2F2', border:'#FECACA' },
 ];
 
+const GRADE_SCALE_PRESETS = {
+  'uk-honours': [
+    { label:'First', min:70, color:'#059669' },
+    { label:'2:1',   min:60, color:'#2563EB' },
+    { label:'2:2',   min:50, color:'#D97706' },
+    { label:'Third', min:40, color:'#EA580C' },
+    { label:'Fail',  min:0,  color:'#DC2626' },
+  ],
+  'uk-postgrad': [
+    { label:'Distinction', min:70, color:'#059669' },
+    { label:'Merit',       min:60, color:'#2563EB' },
+    { label:'Pass',        min:50, color:'#D97706' },
+    { label:'Fail',        min:0,  color:'#DC2626' },
+  ],
+  'percentage-only': [],
+};
+const DEFAULT_GRADE_SCALE = 'uk-honours';
+const DEFAULT_GRADE_THRESHOLDS = GRADE_SCALE_PRESETS[DEFAULT_GRADE_SCALE];
+
+function cloneGradeThresholds(scale) {
+  return JSON.parse(JSON.stringify(GRADE_SCALE_PRESETS[scale] || DEFAULT_GRADE_THRESHOLDS));
+}
+
+function getGradeThresholds() {
+  if (APP && APP.settings && Array.isArray(APP.settings.gradeThresholds)) return APP.settings.gradeThresholds;
+  return DEFAULT_GRADE_THRESHOLDS;
+}
+
+function getTargetThresholds() {
+  return getGradeThresholds().filter(t => t.min > 0).sort((a,b) => b.min - a.min);
+}
+
+function getThresholdByMin(min) {
+  return getTargetThresholds().find(t => Number(t.min) === Number(min)) || getTargetThresholds()[0] || null;
+}
+
 function makeId() { return '_' + Math.random().toString(36).slice(2, 9); }
 
 const CATEGORIES = {
@@ -54,18 +90,33 @@ function inferCategory(name) {
   return 'Coursework';
 }
 
-function gradeColor(m) { if(m>=70)return'#059669'; if(m>=60)return'#2563EB'; if(m>=50)return'#D97706'; if(m>=40)return'#EA580C'; return'#DC2626'; }
-function gradeClass(m) { if(m>=70)return'First'; if(m>=60)return'2:1'; if(m>=50)return'2:2'; if(m>=40)return'Third'; return'Fail'; }
+function gradeColor(m) {
+  const thresholds = getGradeThresholds();
+  if (!thresholds.length || m === null || m === undefined || isNaN(parseFloat(m))) return 'var(--accent-mid)';
+  const mark = parseFloat(m);
+  const match = thresholds.find(t => mark >= t.min) || thresholds[thresholds.length - 1];
+  return match.color || 'var(--accent-mid)';
+}
+function gradeClass(m) {
+  const thresholds = getGradeThresholds();
+  if (!thresholds.length) return 'Percentage only';
+  if (m === null || m === undefined || isNaN(parseFloat(m))) return '—';
+  const mark = parseFloat(m);
+  const match = thresholds.find(t => mark >= t.min) || thresholds[thresholds.length - 1];
+  return match.label || '—';
+}
 
 function parseDate(s) {
   if (!s) return null;
-  s = s.trim();
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) return new Date(+m[1], +m[2]-1, +m[3]);
-  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) return new Date(+m[3], +m[2]-1, +m[1]);
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
+  s = String(s).trim();
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return new Date(+iso[1], +iso[2]-1, +iso[3]);
+
+  // Legacy migration fallback for older DD/MM/YYYY data already stored.
+  const legacy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (legacy) return new Date(+legacy[3], +legacy[2]-1, +legacy[1]);
+
+  return null;
 }
 
 function fmtDate(s) {
@@ -82,7 +133,7 @@ const DEFAULT_TAB_NAMES = {
   dashboard: 'Dashboard',
   timetable: 'Timetable',
   modules: 'Modules',
-  checklist: 'Exam Checklist',
+  checklist: 'Revision Checklist',
   target: 'Target Grades'
 };
 
@@ -90,12 +141,18 @@ const DEFAULT_DATA = {
   settings: {
     name:'', uni:'', dept:'', code:'',
     darkMode:false, compact:false, accentPreset:0, accentCustom:'',
+    gradeScale: DEFAULT_GRADE_SCALE,
+    gradeThresholds: cloneGradeThresholds(DEFAULT_GRADE_SCALE),
+    dashboardTargetGrade: 70,
+    showGradeTargets: true,
     tabNames: JSON.parse(JSON.stringify(DEFAULT_TAB_NAMES))
   },
   years: [
-    { id:'y1', label:'Year 1', acyr:'2025/26', modules:[], marks:{}, checklist:{} }
+    { id:'y1', label:'Year 1', acyr:'2025/26', modules:[], marks:{}, checklist:{}, targetGrades:{}, futureModuleGrades:{}, weighting:0 }
   ],
-  activeYear: 'y1'
+  activeYear: 'y1',
+  activeOverview: false,
+  lastTab: {}
 };
 
 let APP = {};
@@ -110,12 +167,22 @@ function loadApp() {
 }
 
 function migrateData() {
+  if (!APP.settings) APP.settings = {};
   if (!APP.settings.tabNames) APP.settings.tabNames = JSON.parse(JSON.stringify(DEFAULT_TAB_NAMES));
+  if (APP.settings.tabNames.checklist === 'Exam Checklist') APP.settings.tabNames.checklist = 'Revision Checklist';
+  if (!APP.settings.gradeScale) APP.settings.gradeScale = DEFAULT_GRADE_SCALE;
+  if (!Array.isArray(APP.settings.gradeThresholds)) APP.settings.gradeThresholds = cloneGradeThresholds(APP.settings.gradeScale);
+  if (APP.settings.showGradeTargets === undefined) APP.settings.showGradeTargets = true;
+  if (APP.settings.dashboardTargetGrade === undefined) APP.settings.dashboardTargetGrade = 70;
+  if (!APP.lastTab) APP.lastTab = {};
+  if (APP.activeOverview === undefined) APP.activeOverview = false;
   if (!APP.years) return;
   APP.years.forEach(yr => {
     if (!yr.marks)     yr.marks     = {};
     if (!yr.checklist) yr.checklist = {};
     if (!yr.targetGrades) yr.targetGrades = {};
+    if (yr.weighting === undefined) yr.weighting = 0;
+    if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
     const oldDates  = yr.dates  || {};
     (yr.modules || []).forEach(mod => {
       (mod.components || []).forEach(c => {
@@ -127,13 +194,27 @@ function migrateData() {
         if (c.category === 'Coursework & Essays') c.category = 'Coursework';
       });
     });
+    // TODO: remove in v9 — legacy migration for pre-v6 data
     delete yr.dates;
     delete yr.labels;
   });
 }
 
-function persist() { localStorage.setItem('gradetracker_v7', JSON.stringify(APP)); }
-function saveAll()  { persist(); showToast('✓ Saved!'); }
+function persist() {
+  localStorage.setItem('gradetracker_v7', JSON.stringify(APP));
+  const el = document.getElementById('autosaveIndicator');
+  if (!el) return;
+  el.classList.add('saving');
+  const label = el.querySelector('.autosave-lbl');
+  if (label) label.textContent = 'Saving…';
+  clearTimeout(persist._t);
+  persist._t = setTimeout(() => {
+    el.classList.remove('saving');
+    const lbl = el.querySelector('.autosave-lbl');
+    if (lbl) lbl.textContent = 'All changes saved';
+  }, 900);
+}
+function saveAll()  { persist(); }
 function getYear(yid) { return APP.years.find(y => y.id === yid); }
 function activeYear()  { return getYear(APP.activeYear); }
 function totalCats(yr) { return yr.modules.reduce((s,m) => s+m.cats, 0); }
@@ -168,6 +249,24 @@ function yearMark(yr) {
   const tc=parts.reduce((s,p)=>s+p.cats,0);
   return parts.reduce((s,p)=>s+p.mark*p.cats,0)/tc;
 }
+
+// Compute a weighted overall degree mark from all years using their weightings
+function overallDegreeMark() {
+  const totalW = APP.years.reduce((s,y) => s + (y.weighting||0), 0);
+  if (!totalW) return null;
+  let sum = 0, hasAny = false;
+  for (const yr of APP.years) {
+    const w = yr.weighting || 0;
+    if (!w) continue;
+    const ym = yearMark(yr);
+    if (ym === null) continue;
+    sum += ym * w;
+    hasAny = true;
+  }
+  if (!hasAny) return null;
+  return sum / totalW;
+}
+
 
 function applyDarkMode(enabled) { document.documentElement.setAttribute('data-theme', enabled?'dark':'light'); }
 function applyDensity(mode)     { document.documentElement.setAttribute('data-density', mode); }
@@ -235,11 +334,16 @@ function renderHeader() {
   const s=APP.settings, yr=activeYear();
   document.getElementById('logoSub').textContent = s.uni || 'Your academic journey';
   const name = s.name ? `<span class="hl">${s.name}'s </span>` : '';
-  const yearLabel = yr ? yr.label : '';
   const eyeParts = [s.uni, s.dept].filter(Boolean);
   document.getElementById('hdrEyebrow').textContent = eyeParts.length ? eyeParts.join(' · ') : 'Grade Tracker';
   
-  const st = _yearSubtabs[yr?.id] || 'dashboard';
+  if (APP.activeOverview) {
+    document.getElementById('hdrTitle').innerHTML = `${name}All Years Overview`;
+    return;
+  }
+
+  const yearLabel = yr ? yr.label : '';
+  const st = _yearSubtabs[yr?.id] || APP.lastTab?.[yr?.id] || 'dashboard';
   let tabName = s.tabNames[st] || DEFAULT_TAB_NAMES[st];
   if(st === 'dashboard') tabName = yearLabel || 'Dashboard';
   
@@ -250,9 +354,22 @@ let yeEditId = null;
 function renderYearsNav() {
   const nav = document.getElementById('yearsNav');
   nav.innerHTML = '';
+
+  // Overview tab
+  const ovBtn = document.createElement('div');
+  ovBtn.className = 'year-tab-btn' + (APP.activeOverview ? ' active' : '');
+  ovBtn.onclick = () => switchOverview();
+  ovBtn.setAttribute('aria-label', 'All Years Overview');
+  const ovLeft = document.createElement('div'); ovLeft.className = 'yr-left';
+  const ovDot = document.createElement('span'); ovDot.className = 'yr-dot';
+  const ovLabel = document.createElement('span'); ovLabel.className = 'yr-label'; ovLabel.textContent = '✦ All Years';
+  ovLeft.appendChild(ovDot); ovLeft.appendChild(ovLabel);
+  ovBtn.appendChild(ovLeft);
+  nav.appendChild(ovBtn);
+
   APP.years.forEach(yr => {
     const btn = document.createElement('div');
-    btn.className = 'year-tab-btn' + (yr.id===APP.activeYear?' active':'');
+    btn.className = 'year-tab-btn' + (!APP.activeOverview && yr.id===APP.activeYear?' active':'');
     btn.onclick = () => switchYear(yr.id);
     btn.setAttribute('aria-label', `${yr.label}`);
 
@@ -266,6 +383,7 @@ function renderYearsNav() {
     editBtn.className = 'icon-btn btn-sm yr-edit-btn';
     editBtn.innerHTML = '✎';
     editBtn.title = 'Edit year';
+    editBtn.setAttribute('aria-label', `Edit ${yr.label}`);
     editBtn.onclick = (e) => { e.stopPropagation(); openYearEdit(yr.id); };
 
     btn.appendChild(left);
@@ -300,7 +418,7 @@ function saveTabEdit() {
 
 function renderSidebarNav(yid) {
   const nav = document.getElementById('sidebarNav');
-  const st  = _yearSubtabs[yid] || 'dashboard';
+  const st  = _yearSubtabs[yid] || APP.lastTab?.[yid] || 'dashboard';
   const names = APP.settings.tabNames;
   
   const tabs = [
@@ -316,14 +434,34 @@ function renderSidebarNav(yid) {
       <div class="nav-btn-left">
         <span class="nav-icon">${t.icon}</span> <span class="nav-lbl">${names[t.id] || DEFAULT_TAB_NAMES[t.id]}</span>
       </div>
-      <button class="icon-btn btn-sm nav-edit-btn" onclick="event.stopPropagation();openTabEdit('${t.id}')" title="Edit tab name">✎</button>
+      <button class="icon-btn btn-sm nav-edit-btn" aria-label="Edit ${names[t.id] || DEFAULT_TAB_NAMES[t.id]}" onclick="event.stopPropagation();openTabEdit('${t.id}')" title="Edit section name">✎</button>
     </div>
   `).join('');
 }
 
 function switchYear(yid) {
   APP.activeYear = yid;
+  APP.activeOverview = false;
+  if (APP.lastTab?.[yid]) _yearSubtabs[yid] = APP.lastTab[yid];
   renderYearsNav(); renderYearPanes(); renderSidebarNav(yid); renderHeader(); persist();
+}
+
+function switchOverview() {
+  APP.activeOverview = true;
+  renderYearsNav(); renderOverviewPane();
+  // Show/hide panes
+  document.querySelectorAll('.year-pane').forEach(p => { p.style.display = 'none'; p.classList.remove('active'); });
+  const ovPane = document.getElementById('pane-overview');
+  if (ovPane) { ovPane.style.display = 'block'; ovPane.classList.add('active'); }
+  renderSidebarNav(APP.activeYear);
+  renderHeader();
+  persist();
+}
+
+function renderOverviewPane() {
+  const pane = document.getElementById('pane-overview');
+  if (!pane) return;
+  pane.innerHTML = buildOverview();
 }
 
 function openYearEdit(yid) {
@@ -333,6 +471,7 @@ function openYearEdit(yid) {
   document.getElementById('yearEditTitle').textContent   = yid ? yr.label : 'New Academic Year';
   document.getElementById('ye-label').value = yr ? yr.label : '';
   document.getElementById('ye-acyr').value  = yr ? yr.acyr  : '';
+  document.getElementById('ye-weighting').value = yr ? (yr.weighting || 0) : 0;
   document.getElementById('deleteYearBtn').style.display = yid ? 'inline-flex' : 'none';
   openOverlay('yearEditOverlay');
 }
@@ -340,20 +479,23 @@ function openYearEdit(yid) {
 function saveYearEdit() {
   const label = document.getElementById('ye-label').value.trim();
   const acyr  = document.getElementById('ye-acyr').value.trim();
+  const weighting = Math.max(0, Math.min(100, parseFloat(document.getElementById('ye-weighting').value) || 0));
   if (!label) { showToast('Please enter a label'); return; }
   if (yeEditId) {
-    const yr = getYear(yeEditId); yr.label=label; yr.acyr=acyr;
+    const yr = getYear(yeEditId); yr.label=label; yr.acyr=acyr; yr.weighting=weighting;
   } else {
     const nid = makeId();
-    APP.years.push({id:nid,label,acyr,modules:[],marks:{},checklist:{},targetGrades:{}});
+    APP.years.push({id:nid,label,acyr,modules:[],marks:{},checklist:{},targetGrades:{},weighting});
     APP.activeYear = nid;
+    APP.activeOverview = false;
   }
   persist(); closeOverlayDirect('yearEditOverlay'); renderAll();
 }
 
 function deleteCurrentYear() {
   if (APP.years.length<=1) { showToast('Cannot delete the only year.'); return; }
-  if (!confirm(`Delete "${getYear(yeEditId).label}" and ALL its data?`)) return;
+  const yrToDelete = getYear(yeEditId);
+  if (!confirm(`Delete "${yrToDelete.label}" and all its data? This cannot be undone.`)) return;
   APP.years = APP.years.filter(y => y.id!==yeEditId);
   if (APP.activeYear===yeEditId) APP.activeYear = APP.years[0].id;
   persist(); closeOverlayDirect('yearEditOverlay'); renderAll();
@@ -405,8 +547,9 @@ function saveModEdit() {
 }
 
 function deleteCurrentMod() {
-  if (!confirm('Delete this module and all its components?')) return;
-  const yr=getYear(meYid); yr.modules=yr.modules.filter(m=>m.id!==meModId);
+  const yr=getYear(meYid);
+  const modToDelete = yr.modules.find(m=>m.id===meModId);
+  if (!confirm(`Delete "${modToDelete?.name || 'this module'}" and all its components? This cannot be undone.`)) return; yr.modules=yr.modules.filter(m=>m.id!==meModId);
   persist(); closeOverlayDirect('modEditOverlay'); renderYearPane(meYid);
 }
 
@@ -464,8 +607,9 @@ function saveCompEdit() {
 }
 
 function deleteCurrentComp() {
-  if (!confirm('Delete this component?')) return;
   const yr=getYear(ceYid), mod=yr.modules.find(m=>m.id===ceModId);
+  const compToDelete = mod.components.find(c=>c.id===ceCompId);
+  if (!confirm(`Delete "${compToDelete?.name || 'this component'}"? This cannot be undone.`)) return;
   mod.components=mod.components.filter(c=>c.id!==ceCompId);
   persist(); closeOverlayDirect('compEditOverlay'); renderYearPane(ceYid);
 }
@@ -478,11 +622,27 @@ function openEditSettings() {
   document.getElementById('cfg-code').value    = s.code  || '';
   document.getElementById('cfg-dark').checked  = !!s.darkMode;
   document.getElementById('cfg-compact').checked = !!s.compact;
+  const gradeScaleEl = document.getElementById('cfg-gradeScale');
+  if (gradeScaleEl) gradeScaleEl.value = s.gradeScale || DEFAULT_GRADE_SCALE;
   const activePreset = COLOUR_PRESETS[s.accentPreset||0];
   const picker = document.getElementById('cfg-customColour');
   if (picker) picker.value = s.accentCustom || activePreset.mid;
   renderSwatches();
   openOverlay('settingsOverlay');
+}
+
+
+function setGradeScale(scale) {
+  const safeScale = GRADE_SCALE_PRESETS[scale] ? scale : DEFAULT_GRADE_SCALE;
+  APP.settings.gradeScale = safeScale;
+  APP.settings.gradeThresholds = cloneGradeThresholds(safeScale);
+}
+
+function applyGradeScale(scale) {
+  setGradeScale(scale);
+  persist();
+  renderAll();
+  showToast('Grading scale updated.');
 }
 
 function saveSettings() {
@@ -493,14 +653,27 @@ function saveSettings() {
   s.code   = document.getElementById('cfg-code').value.trim();
   s.darkMode = document.getElementById('cfg-dark').checked;
   s.compact  = document.getElementById('cfg-compact').checked;
-  persist(); restoreAppearance(); closeOverlayDirect('settingsOverlay'); renderHeader();
+  const gradeScaleEl = document.getElementById('cfg-gradeScale');
+  if (gradeScaleEl && gradeScaleEl.value !== s.gradeScale) setGradeScale(gradeScaleEl.value);
+  persist(); restoreAppearance(); closeOverlayDirect('settingsOverlay'); renderAll();
   showToast('Settings saved!');
 }
 
-function openOverlay(id)        { closeSidebar(); document.getElementById(id).classList.add('open'); }
+function openOverlay(id) {
+  closeSidebar();
+  const overlay = document.getElementById(id);
+  if (!overlay) return;
+  overlay.classList.add('open');
+  const firstInput = overlay.querySelector('input:not([type=hidden]), select, textarea');
+  if (firstInput) setTimeout(() => firstInput.focus(), 80);
+}
 function closeOverlay(id,e)     { if(e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open'); }
 function closeOverlayDirect(id) { document.getElementById(id).classList.remove('open'); }
-document.addEventListener('keydown', e => { if(e.key==='Escape') document.querySelectorAll('.overlay.open').forEach(o=>o.classList.remove('open')); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const openOverlay = document.querySelector('.overlay.open');
+  if (openOverlay) closeOverlayDirect(openOverlay.id);
+});
 
 function setSidebarOpen(open) {
   const sidebar = document.getElementById('sidebar');
@@ -541,18 +714,27 @@ document.addEventListener('click', e => {
   if (!shouldKeepSidebarOpenForClick(e)) closeSidebar();
 });
 
-function renderAll() { renderHeader(); renderYearsNav(); renderYearPanes(); renderSidebarNav(APP.activeYear); }
+function renderAll() { renderHeader(); renderYearsNav(); renderYearPanes(); renderOverviewPane(); renderSidebarNav(APP.activeYear); }
 
 function renderYearPanes() {
   const cont=document.getElementById('yearPanes'); cont.innerHTML='';
+
+  // Overview pane (always present)
+  const ovPane = document.createElement('div');
+  ovPane.className = 'year-pane' + (APP.activeOverview ? ' active' : '');
+  ovPane.id = 'pane-overview';
+  ovPane.style.display = APP.activeOverview ? 'block' : 'none';
+  cont.appendChild(ovPane);
+
   APP.years.forEach(yr => {
     const pane=document.createElement('div');
-    pane.className='year-pane'+(yr.id===APP.activeYear?' active':'');
+    pane.className='year-pane'+(!APP.activeOverview && yr.id===APP.activeYear?' active':'');
     pane.id='pane-'+yr.id;
-    pane.style.display=yr.id===APP.activeYear?'block':'none';
+    pane.style.display=(!APP.activeOverview && yr.id===APP.activeYear)?'block':'none';
     cont.appendChild(pane);
     renderYearPane(yr.id);
   });
+  renderOverviewPane();
 }
 
 const _yearSubtabs={}, _ttFilterCat={}, _ttFilterTime={};
@@ -560,7 +742,7 @@ const _yearSubtabs={}, _ttFilterCat={}, _ttFilterTime={};
 function renderYearPane(yid) {
   const yr=getYear(yid), pane=document.getElementById('pane-'+yid);
   if(!pane) return;
-  const st=_yearSubtabs[yid]||'dashboard';
+  const st=_yearSubtabs[yid] || APP.lastTab?.[yid] || 'dashboard';
   pane.innerHTML=`
     <div class="subpane ${st==='dashboard'?'active':''}"  id="sp-${yid}-dashboard">${buildDashboard(yr)}</div>
     <div class="subpane ${st==='timetable'?'active':''}"  id="sp-${yid}-timetable">${buildTimetable(yr)}</div>
@@ -572,6 +754,9 @@ function renderYearPane(yid) {
 
 function switchSubtab(yid, st) {
   _yearSubtabs[yid]=st;
+  if (!APP.lastTab) APP.lastTab = {};
+  APP.lastTab[yid] = st;
+  persist();
   document.querySelectorAll(`#pane-${yid} > .subpane`).forEach(p=>p.classList.remove('active'));
   const target=document.getElementById(`sp-${yid}-${st}`);
   if(target) target.classList.add('active');
@@ -579,6 +764,324 @@ function switchSubtab(yid, st) {
   renderHeader();
   closeSidebar();
 }
+
+// ── Overview (All Years) ──
+function buildOverview() {
+  const totalW = APP.years.reduce((s,y) => s + (y.weighting||0), 0);
+  const hasWeightings = totalW > 0;
+  const overallMark = overallDegreeMark();
+
+  const hint = `<div class="menu-hint">
+    <span class="menu-hint-icon">☰</span>
+    <span>Use the <strong>menu button</strong> or <strong>sidebar</strong> to navigate individual years.</span>
+  </div>`;
+
+  // Overall degree mark card
+  let overallHtml = '';
+  if (hasWeightings) {
+    const col = overallMark !== null ? gradeColor(overallMark) : 'var(--tx4)';
+    const cls = overallMark !== null ? gradeClass(overallMark) : '—';
+    overallHtml = `
+      <div class="ov-overall-card">
+        <div class="ov-overall-label">Projected Degree Classification</div>
+        <div class="ov-overall-mark" style="color:${col}">${overallMark !== null ? overallMark.toFixed(1)+'%' : '—'}</div>
+        <div class="ov-overall-cls" style="color:${col}">${cls}</div>
+        <div class="ov-overall-sub">Based on year weightings · ${totalW}% accounted for</div>
+      </div>`;
+  } else {
+    overallHtml = `
+      <div class="ov-overall-card ov-overall-muted">
+        <div class="ov-overall-label">Projected Degree Classification</div>
+        <div class="ov-overall-mark" style="color:var(--tx4)">—</div>
+        <div class="ov-overall-sub">Set year weightings via ✎ Edit on each year to see your projected classification</div>
+      </div>`;
+  }
+
+  // Target grade planner
+  const targetPlannerHtml = buildOverviewTargetPlanner();
+
+  // Per-year summary cards
+  let yearCards = '';
+  APP.years.forEach(yr => {
+    const ym = yearMark(yr);
+    const totalMods = yr.modules.length;
+    const completedMods = yr.modules.filter(m => modTotal(m, yr.marks) !== null).length;
+    const completedCats = yr.modules.reduce((s,m) => s + (modTotal(m,yr.marks)!==null ? m.cats : 0), 0);
+    const totalCats2 = yr.modules.reduce((s,m) => s + m.cats, 0);
+    const wt = yr.weighting || 0;
+
+    const col = ym !== null ? gradeColor(ym) : 'var(--tx4)';
+    const cls = ym !== null ? gradeClass(ym) : '';
+
+    let pills = yr.modules.map(m => {
+      const t = modTotal(m, yr.marks);
+      const p = modPartial(m, yr.marks);
+      const label = t !== null ? `<span class="ps">${t.toFixed(1)}%</span>` : p !== null ? `<span style="color:var(--tx3)">${p.toFixed(1)}pt</span>` : `<span style="color:var(--tx4)">—</span>`;
+      return `<div class="yr-pill">${m.code} ${label}</div>`;
+    }).join('');
+
+    yearCards += `
+      <div class="ov-yr-card" onclick="switchYear('${yr.id}')">
+        <div class="ov-yr-card-hdr">
+          <div class="ov-yr-card-label">${yr.label} <span class="ov-yr-acyr">${yr.acyr||''}</span></div>
+          <div class="ov-yr-card-wt">${wt ? wt+'% weight' : 'No weight set'}</div>
+        </div>
+        <div class="ov-yr-card-mark" style="color:${col}">${ym !== null ? ym.toFixed(1)+'%' : '—'} <span class="ov-yr-card-cls">${cls}</span></div>
+        <div class="ov-yr-card-meta">${completedMods} / ${totalMods} modules · ${completedCats} / ${totalCats2} credits</div>
+        <div class="yr-pills" style="margin-top:10px">${pills || '<span style="color:var(--tx4);font-size:11px;font-family:var(--fm)">No modules</span>'}</div>
+      </div>`;
+  });
+
+  return hint + overallHtml + targetPlannerHtml + `<div class="ov-yr-grid">${yearCards}</div>`;
+}
+
+function buildOverviewTargetPlanner() {
+  const TARGETS = getTargetThresholds();
+  const totalW = APP.years.reduce((s,y)=>s+(y.weighting||0),0);
+  if (!totalW || !TARGETS.length) return '';
+
+  let sel = APP.overviewTargetGrade !== undefined ? APP.overviewTargetGrade : TARGETS[0].min;
+  if (!TARGETS.some(t => Number(t.min) === Number(sel))) sel = TARGETS[0].min;
+
+  // Calculate: weighted sum of known years + weighted unknown years contribution
+  // required_overall = sel
+  // sum(known_ym * w) + req_unknown * sum(unknown_w) = sel * totalW
+  let knownSum = 0, unknownW = 0;
+  for (const yr of APP.years) {
+    const w = yr.weighting || 0;
+    if (!w) continue;
+    const ym = yearMark(yr);
+    if (ym !== null) knownSum += ym * w;
+    else unknownW += w;
+  }
+
+  const targetBtns = TARGETS.map(t =>
+    `<button class="ov-target-btn${sel===t.min?' active':''}" style="${sel===t.min?`background:${t.color};color:#fff;border-color:${t.color}`:`color:${t.color};border-color:${t.color}44`}" onclick="setOverviewTarget(${t.min})">${t.label} (${t.min}%+)</button>`
+  ).join('');
+
+  let resultHtml = '';
+  if (unknownW === 0) {
+    const overall = overallDegreeMark();
+    if (overall !== null) {
+      const achieved = overall >= sel;
+      resultHtml = achieved
+        ? `<div class="ov-target-result ov-target-ok">🎉 Target already achieved! Your current projected mark is <strong>${overall.toFixed(1)}%</strong>.</div>`
+        : `<div class="ov-target-result ov-target-warn">⚠ Target not achievable with current marks. Projected: <strong>${overall.toFixed(1)}%</strong>.</div>`;
+    } else {
+      resultHtml = `<div class="ov-target-result">Enter marks in individual year modules to see your projection.</div>`;
+    }
+  } else {
+    const needed = (sel * totalW - knownSum) / unknownW;
+    if (needed <= 0) {
+      resultHtml = `<div class="ov-target-result ov-target-ok">🎉 You've already secured enough marks for a <strong>${TARGETS.find(t=>t.min===sel)?.label||sel+'%'}</strong>!</div>`;
+    } else if (needed > 100) {
+      resultHtml = `<div class="ov-target-result ov-target-warn">⚠ A <strong>${TARGETS.find(t=>t.min===sel)?.label||sel+'%'}</strong> is not achievable with your current marks in graded years.</div>`;
+    } else {
+      // Show per-year breakdown for ungraded years
+      let breakdown = '';
+      APP.years.forEach(yr => {
+        const w = yr.weighting || 0;
+        if (!w) return;
+        const ym = yearMark(yr);
+        if (ym !== null) return; // already graded
+        breakdown += `<div class="ov-target-yr-row"><span class="ov-target-yr-lbl">${yr.label} (${w}% weight)</span><span class="ov-target-yr-val" style="color:${gradeColor(needed)}">${needed.toFixed(1)}% average needed</span></div>`;
+      });
+      resultHtml = `<div class="ov-target-result">To achieve a <strong>${TARGETS.find(t=>t.min===sel)?.label||''} (${sel}%+)</strong>, you need in your remaining years:
+        <div class="ov-target-breakdown">${breakdown}</div>
+      </div>`;
+    }
+  }
+
+  return `<div class="ov-target-planner">
+    <div class="ov-section-title">🎯 Target Grade Planner</div>
+    <div style="font-family:var(--fm);font-size:11px;color:var(--tx3);margin-bottom:14px">Select your target degree classification to see what you need in ungraded years.</div>
+    <div class="ov-target-btns">${targetBtns}</div>
+    ${resultHtml}
+  </div>`;
+}
+
+function setOverviewTarget(val) {
+  APP.overviewTargetGrade = val;
+  persist();
+  const pane = document.getElementById('pane-overview');
+  if (pane) pane.innerHTML = buildOverview();
+}
+
+
+function hasEnteredMark(v) {
+  return v !== '' && v !== undefined && v !== null && !isNaN(parseFloat(v));
+}
+
+function getUpcomingDeadlines(yr, n = 5) {
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const items = [];
+  (yr.modules || []).forEach(mod => {
+    (mod.components || []).forEach(comp => {
+      const d = resolveCompDate(comp);
+      if (!d || d < today) return;
+      const mark = yr.marks[comp.id];
+      items.push({
+        modName: mod.name,
+        modCode: mod.code,
+        compName: comp.name,
+        date: d,
+        dateRaw: comp.date,
+        category: comp.category || 'Coursework',
+        mark: hasEnteredMark(mark) ? parseFloat(mark) : null,
+      });
+    });
+  });
+  return items.sort((a,b) => a.date - b.date).slice(0, n);
+}
+
+function buildDegreeBoundaryCard() {
+  const gradedYears = APP.years.filter(y => yearMark(y) !== null).length;
+  const overall = overallDegreeMark();
+  const thresholds = getGradeThresholds();
+
+  if (gradedYears < 2 || overall === null) {
+    return `<div class="dashboard-card degree-boundary-card">
+      <div>
+        <div class="dashboard-card-title">🎓 Degree average</div>
+        <div class="degree-boundary-muted">Add more grades to see your overall average.</div>
+      </div>
+    </div>`;
+  }
+
+  const col = gradeColor(overall);
+  const cls = gradeClass(overall);
+  const higher = thresholds
+    .filter(t => t.min > overall)
+    .sort((a,b) => a.min - b.min)[0];
+
+  let gapText = '';
+  if (!thresholds.length) {
+    gapText = 'Classification labels are turned off, so this shows your percentage only.';
+  } else if (higher) {
+    gapText = `${(higher.min - overall).toFixed(1)} marks from a ${higher.label}.`;
+  } else {
+    gapText = `You are in ${cls} class territory — keep it up!`;
+  }
+
+  return `<div class="dashboard-card degree-boundary-card">
+    <div>
+      <div class="dashboard-card-title">🎓 Degree average</div>
+      <div class="degree-boundary-mark" style="color:${col}">${overall.toFixed(1)}%</div>
+      <div class="degree-boundary-class" style="color:${col}">${thresholds.length ? cls : 'Percentage only'}</div>
+    </div>
+    <div class="degree-boundary-gap">${gapText}</div>
+  </div>`;
+}
+
+function buildUpcomingDeadlinesCard(yr) {
+  const items = getUpcomingDeadlines(yr, 5);
+  let rows = '';
+  if (!items.length) {
+    rows = '<div style="font-family:var(--fm);font-size:11px;color:var(--tx4);font-style:italic">No upcoming deadlines — you are all caught up!</div>';
+  } else {
+    rows = `<div class="deadline-list">${items.map(item => {
+      const status = item.mark !== null
+        ? '<span class="badge badge-ok">✓ Graded</span>'
+        : `<span class="deadline-date">${fmtDate(item.dateRaw)}</span>`;
+      return `<div class="deadline-row ${item.mark !== null ? 'graded' : ''}">
+        <div class="deadline-main">
+          ${catBadgeHtml(item.category)}
+          <div style="min-width:0">
+            <div class="deadline-title">${item.compName}</div>
+            <div class="deadline-module">${item.modCode} · ${item.modName}</div>
+          </div>
+        </div>
+        ${status}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  return `<div class="dashboard-card">
+    <div class="dashboard-card-title">📅 Upcoming deadlines</div>
+    ${rows}
+  </div>`;
+}
+
+function buildDashboardTargetsCard(yr) {
+  const thresholds = getTargetThresholds();
+  if (!thresholds.length) return '';
+  const visible = APP.settings.showGradeTargets !== false;
+  let selected = APP.settings.dashboardTargetGrade || thresholds[0].min;
+  if (!thresholds.some(t => Number(t.min) === Number(selected))) selected = thresholds[0].min;
+  const target = getThresholdByMin(selected) || thresholds[0];
+
+  const buttons = thresholds.map(t => `
+    <button class="target-choice-btn ${Number(selected)===Number(t.min)?'active':''}"
+            onclick="setDashboardTarget(${t.min})">
+      ${t.label} (${t.min}%+)
+    </button>`).join('');
+
+  let rows = '';
+  if (visible) {
+    const modules = (yr.modules || []).filter(mod => {
+      const entered = modEnteredWeight(mod, yr.marks);
+      return entered > 0 && entered < 100;
+    });
+
+    if (!modules.length) {
+      rows = '<div style="font-family:var(--fm);font-size:11px;color:var(--tx4);font-style:italic">Enter at least one mark in an unfinished module to see what you need next.</div>';
+    } else {
+      rows = modules.map(mod => {
+        const enteredWeight = modEnteredWeight(mod, yr.marks);
+        const partialMark = modPartial(mod, yr.marks) || 0;
+        const remainingWeight = 100 - enteredWeight;
+        const neededMark = (target.min - partialMark) / (1 - (enteredWeight / 100));
+        let copy = '';
+        if (neededMark <= 0) {
+          copy = `You have already reached <strong>${target.label}</strong> territory for this module.`;
+        } else if (neededMark > 100) {
+          copy = `You would need <strong>${neededMark.toFixed(1)}%</strong> on the remaining <strong>${remainingWeight}%</strong>, so this target is unlikely from current marks.`;
+        } else {
+          copy = `You need <strong>${neededMark.toFixed(1)}%</strong> on the remaining <strong>${remainingWeight}%</strong> of this module to achieve a <strong>${target.label}</strong>.`;
+        }
+        return `<div class="grade-target-row">
+          <div>
+            <div style="font-family:var(--fd);font-size:13px;font-weight:800;color:var(--tx);margin-bottom:2px">${mod.code} · ${mod.name}</div>
+            <div class="grade-target-copy">${copy}</div>
+          </div>
+          <div class="grade-target-meta">${enteredWeight}% graded</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  return `<div class="dashboard-card dashboard-targets-card">
+    <div class="toggle-row">
+      <div>
+        <div class="dashboard-card-title" style="margin-bottom:2px">🎯 What do I need?</div>
+        <div class="toggle-sub">See the average needed on remaining assessments.</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" ${visible ? 'checked' : ''} onchange="toggleDashboardTargets(this.checked)" />
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    ${visible ? `<div class="target-btn-row">${buttons}</div>${rows}` : ''}
+  </div>`;
+}
+
+function toggleDashboardTargets(show) {
+  APP.settings.showGradeTargets = !!show;
+  persist();
+  const yr = activeYear();
+  const dsp = yr ? document.getElementById(`sp-${yr.id}-dashboard`) : null;
+  if (dsp) dsp.innerHTML = buildDashboard(yr);
+}
+
+function setDashboardTarget(min) {
+  APP.settings.dashboardTargetGrade = Number(min);
+  persist();
+  const yr = activeYear();
+  const dsp = yr ? document.getElementById(`sp-${yr.id}-dashboard`) : null;
+  if (dsp) dsp.innerHTML = buildDashboard(yr);
+}
+
 
 function buildDashboard(yr) {
   const noModules = !yr.modules || yr.modules.length === 0;
@@ -590,11 +1093,13 @@ function buildDashboard(yr) {
 
   if (noModules) {
     return hint + `
-      <div class="empty-state" onclick="switchSubtabAndOpenModEdit('${yr.id}')">
-        <div class="empty-state-icon">📚</div>
+      <div class="empty-state-card">
+        <div class="empty-state-icon">🎓</div>
         <div class="empty-state-title">No modules yet</div>
-        <div class="empty-state-sub">Add your first module to start tracking grades.<br>Click here or go to <strong>Modules</strong> in the menu.</div>
-        <button class="empty-state-btn" onclick="event.stopPropagation();switchSubtab('${yr.id}','modules');openModEdit('${yr.id}',null)">+ Add your first module</button>
+        <div class="empty-state-sub">Add your first module to start tracking your grades.</div>
+        <button class="btn btn-primary" onclick="switchSubtab('${yr.id}','modules');openModEdit('${yr.id}',null)">
+          + Add a module
+        </button>
       </div>`;
   }
 
@@ -616,49 +1121,18 @@ function buildDashboard(yr) {
     pills+=`<div class="yr-pill">${m.code} ${label}</div>`;
   });
 
-  const today=new Date(); today.setHours(0,0,0,0);
-  const upcoming=[];
-  yr.modules.forEach(mod => {
-    mod.components.forEach(c => {
-      const d=resolveCompDate(c);
-      const hasMark=yr.marks[c.id]!==''&&yr.marks[c.id]!==undefined&&yr.marks[c.id]!==null&&!isNaN(parseFloat(yr.marks[c.id]));
-      if (d&&d>=today&&!hasMark) upcoming.push({mod,comp:c,date:d,days:Math.ceil((d-today)/86400000)});
-    });
-  });
-  upcoming.sort((a,b)=>a.date-b.date);
-
-  let upHtml='';
-  if (!upcoming.length) {
-    upHtml='<div style="font-family:var(--fm);font-size:11px;color:var(--tx4);font-style:italic">No upcoming dates — add dates to components in the Modules tab.</div>';
-  } else {
-    upcoming.slice(0,8).forEach(item => {
-      const urgency=item.days<=7?'var(--red)':item.days<=14?'var(--am)':'var(--tx3)';
-      upHtml+=`<div class="upcoming-row">
-        <div style="display:flex;align-items:center;gap:8px;overflow:hidden;min-width:0">
-          <span style="font-family:var(--fm);font-size:10px;color:var(--accent-mid);background:var(--accent-bg);padding:2px 7px;border-radius:6px;border:1px solid var(--accent-border);white-space:nowrap;flex-shrink:0">${item.mod.code}</span>
-          ${catBadgeHtml(item.comp.category)}
-          <span style="font-size:13px;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${item.mod.name} — ${item.comp.name}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:7px;flex-shrink:0">
-          <span style="font-family:var(--fm);font-size:11px;color:var(--tx2);white-space:nowrap">${fmtDate(item.comp.date)}</span>
-          <span style="font-family:var(--fm);font-size:11px;color:${urgency};font-weight:700;min-width:26px;text-align:right">${item.days===0?'Today!':item.days+'d'}</span>
-        </div>
-      </div>`;
-    });
-  }
-
-  const completedCats=yr.modules.reduce((s,m)=>s+(modTotal(m,yr.marks)!==null?m.cats:0),0);
-  return hint+`
+  const completedCredits=yr.modules.reduce((s,m)=>s+(modTotal(m,yr.marks)!==null?m.cats:0),0);
+  return hint
+    + buildDegreeBoundaryCard()
+    + buildUpcomingDeadlinesCard(yr)
+    + `
     <div class="year-overview" data-label="${yr.label.toUpperCase()}">
       <div style="margin-bottom:4px;font-family:var(--fm);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx3)">${yr.label} Overall</div>
       <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:8px">${gradeHtml}</div>
-      <p style="font-size:12px;color:var(--tx3);font-family:var(--fm)">${ym!==null?`CATS-weighted · ${completedCats} of ${totalCats(yr)} CATS complete`:''}</p>
+      <p style="font-size:12px;color:var(--tx3);font-family:var(--fm)">${ym!==null?`Credits-weighted · ${completedCredits} of ${totalCats(yr)} credits complete`:''}</p>
       <div class="yr-pills">${pills}</div>
-    </div>
-    <div class="upcoming-box">
-      <div style="font-family:var(--fd);font-size:13px;font-weight:800;letter-spacing:.03em;color:var(--tx2);margin-bottom:12px">📅 Next Up</div>
-      ${upHtml}
-    </div>`;
+    </div>`
+    + buildDashboardTargetsCard(yr);
 }
 
 function switchSubtabAndOpenModEdit(yid) {
@@ -755,7 +1229,7 @@ function buildTTList(items, yr) {
         </div>
         <div class="tt-right">
           ${markPill}${cdHtml}
-          <button class="icon-btn btn-sm" title="Edit component" onclick="event.stopPropagation();openCompEdit('${yr.id}','${item.mod.id}','${item.comp.id}')">✎</button>
+          <button class="icon-btn btn-sm" aria-label="Edit ${item.comp.name}" title="Edit component" onclick="event.stopPropagation();openCompEdit('${yr.id}','${item.mod.id}','${item.comp.id}')">✎</button>
         </div>
       </div>`;
     });
@@ -793,7 +1267,7 @@ function openExamView(yid, compId) {
   if(comp.duration) grid+=`<div class="modal-det"><div class="modal-det-lbl">⏱ Duration</div><div class="modal-det-val">${comp.duration}</div></div>`;
   if(comp.location) grid+=`<div class="modal-det${!comp.duration?' full':''}"><div class="modal-det-lbl">📍 Venue</div><div class="modal-det-val" style="font-size:13px">${comp.location}</div></div>`;
   grid+=`<div class="modal-det"><div class="modal-det-lbl">⚖️ Weight</div><div class="modal-det-val">${comp.weight}% of module</div></div>`;
-  grid+=`<div class="modal-det"><div class="modal-det-lbl">📚 CATS</div><div class="modal-det-val">${mod.cats} CATS</div></div>`;
+  grid+=`<div class="modal-det"><div class="modal-det-lbl">📚 Credits</div><div class="modal-det-val">${mod.cats} credits</div></div>`;
   grid+=`<div class="modal-det full" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><div class="modal-det-lbl">Edit component</div><div style="font-size:12px;color:var(--tx3)">Date, time, venue, name, weight, category</div></div><button class="btn btn-ghost btn-sm" onclick="closeOverlayDirect('examViewOverlay');openCompEdit('${yid}','${mod.id}','${compId}')">✎ Edit</button></div>`;
   document.getElementById('ev-grid').innerHTML=grid;
   let markHtml='';
@@ -825,11 +1299,13 @@ function buildModules(yr) {
     if(total!==null){pillTxt=total.toFixed(1)+'%';pillStyle=`color:${gradeColor(total)};background:${gradeColor(total)}18;border-color:${gradeColor(total)}44`;}
     else if(partial!==null){pillTxt=`${partial.toFixed(1)} / ${ew} pts`;pillStyle='color:var(--tx2);';}
 
-    // Module URL link button (from Warwick catalogue)
+    // Module URL quick-link (from course import/catalogue data)
     const modUrl = mod.url || (ALL_MODULES_DICT[mod.code] ? ALL_MODULES_DICT[mod.code].url : '');
-    const urlBtn = modUrl
-      ? `<a href="${modUrl}" target="_blank" rel="noopener" class="icon-btn mod-link-btn" title="Open Warwick module page" onclick="event.stopPropagation()" style="font-size:14px;text-decoration:none;display:inline-flex;align-items:center;margin-right:4px">🔗</a>`
+    const safeModUrl = String(modUrl || '').replace(/"/g, '&quot;');
+    const urlLink = safeModUrl
+      ? `<a href="${safeModUrl}" target="_blank" rel="noopener" class="mod-url-link" title="Open official module page" onclick="event.stopPropagation()">📎 Module page</a>`
       : '';
+    const progress = Math.min(100, Math.max(0, Math.round(ew * 10) / 10));
 
     let compRows='';
     mod.components.forEach(c=>{
@@ -851,7 +1327,7 @@ function buildModules(yr) {
         </div></td>
         <td style="font-family:var(--fm);font-size:11px;color:var(--tx3)">${c.date||'<span style="color:var(--tx4)">—</span>'}</td>
         <td>${statusHtml}</td>
-        <td><button class="icon-btn" title="Edit component (date, time, venue, mark, name, weight)" onclick="openCompEdit('${yr.id}','${mod.id}','${c.id}')">✎</button></td>
+        <td><button class="icon-btn" aria-label="Edit ${c.name}" title="Edit component (date, time, venue, mark, name, weight)" onclick="openCompEdit('${yr.id}','${mod.id}','${c.id}')">✎</button></td>
       </tr>`;
     });
 
@@ -872,13 +1348,19 @@ function buildModules(yr) {
     html+=`<div class="card" id="modcard-${yr.id}-${mod.id}">
       <div class="mod-hdr" onclick="toggleCard('modcard-${yr.id}-${mod.id}')">
         <span class="mod-code">${mod.code}</span>
-        <span class="mod-name">${mod.name}${splitBadge}</span>
+        <span class="mod-title-wrap">
+          <span class="mod-name">${mod.name}${splitBadge}</span>
+          ${urlLink}
+        </span>
         <span class="mod-pill" style="${pillStyle}">${pillTxt}</span>
-        <span class="mod-cats">${mod.cats} CATS</span>
-        ${urlBtn}
-        <button class="icon-btn" onclick="event.stopPropagation();openModEdit('${yr.id}','${mod.id}')" title="Edit module" style="margin-right:4px">✎</button>
+        <span class="mod-cats">${mod.cats} credits</span>
+        <button class="icon-btn" aria-label="Edit ${mod.name}" onclick="event.stopPropagation();openModEdit('${yr.id}','${mod.id}')" title="Edit module" style="margin-right:4px">✎</button>
         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
+      <div class="mod-progress-bar-track">
+        <div class="mod-progress-bar-fill" style="width:${progress}%"></div>
+      </div>
+      <div class="mod-progress-label">${progress}% graded</div>
       <div class="mod-body" style="display:none">
         <table class="comp-tbl">
           <thead><tr><th>Component</th><th>Category</th><th>Wt</th><th>Your Mark</th><th>Date</th><th>Status</th><th></th></tr></thead>
@@ -896,17 +1378,63 @@ function buildModules(yr) {
 
 function buildTarget(yr) {
   if (!yr.targetGrades) yr.targetGrades = {};
+  if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   
   if (!yr.modules || !yr.modules.length) {
     return `<div class="tt-empty">No modules yet. Add modules to start exploring target grades.</div>`;
   }
 
+  // Determine if this year is "future" (no marks at all entered)
+  const anyMarks = yr.modules.some(m => m.components.some(c => {
+    const v = yr.marks[c.id];
+    return v !== '' && v !== undefined && v !== null && !isNaN(parseFloat(v));
+  }));
+  const isFutureYear = !anyMarks;
+
+  // Overall target planner for this year
+  const totalW = APP.years.reduce((s,y)=>s+(y.weighting||0),0);
+  const targets = getTargetThresholds();
+  let sel = APP.overviewTargetGrade !== undefined ? APP.overviewTargetGrade : (targets[0]?.min || 70);
+  if (targets.length && !targets.some(t => Number(t.min) === Number(sel))) sel = targets[0].min;
+
+  let yearTargetSection = '';
+  if (totalW > 0 && isFutureYear && targets.length) {
+    // Compute what we need from this year
+    let knownSum = 0, unknownW = 0;
+    APP.years.forEach(y => {
+      const w = y.weighting || 0;
+      if (!w) return;
+      if (y.id === yr.id) { unknownW += w; return; }
+      const ym = yearMark(y);
+      if (ym !== null) knownSum += ym * w;
+      else unknownW += w; // other unknown years also share the need
+    });
+    const neededAvg = totalW > 0 ? (sel * totalW - knownSum) / unknownW : null;
+    const targetBtns = targets
+      .map(t => `<button class="ov-target-btn${Number(sel)===Number(t.min)?' active':''}" style="${Number(sel)===Number(t.min)?`background:${t.color};color:#fff;border-color:${t.color}`:`color:${t.color};border-color:${t.color}44`}" onclick="setOverviewTargetAndRefresh('${yr.id}',${t.min})">${t.label}</button>`).join('');
+
+    let needHtml = '';
+    if (neededAvg !== null) {
+      if (neededAvg <= 0) needHtml = `<div class="ov-target-result ov-target-ok">🎉 You've already secured enough for a <strong>${getThresholdByMin(sel)?.label || sel+'%+'}</strong>!</div>`;
+      else if (neededAvg > 100) needHtml = `<div class="ov-target-result ov-target-warn">⚠ <strong>${getThresholdByMin(sel)?.label || ''}</strong> not achievable with current marks in other years.</div>`;
+      else needHtml = `<div class="ov-target-result">For a <strong>${getThresholdByMin(sel)?.label || ''} (${sel}%+)</strong> overall, you need roughly <strong style="color:${gradeColor(neededAvg)}">${neededAvg.toFixed(1)}%</strong> across all ungraded years.</div>`;
+    }
+
+    yearTargetSection = `<div class="ov-target-planner" style="margin-bottom:24px">
+      <div class="ov-section-title">🎯 Degree Target for This Year</div>
+      <div style="font-family:var(--fm);font-size:11px;color:var(--tx3);margin-bottom:12px">Select a target classification to see what you need here.</div>
+      <div class="ov-target-btns" style="margin-bottom:12px">${targetBtns}</div>
+      ${needHtml}
+    </div>`;
+  }
+
   let html = `
-    <div style="font-family:var(--fd);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Target Grades Simulator</div>
-    <div style="font-family:var(--fm);font-size:12px;color:var(--tx3);margin-bottom:24px;line-height:1.5">Set a target grade for your modules to see what average you need on your remaining, unmarked components.</div>
+    <div style="font-family:var(--fd);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Target Grades ${isFutureYear ? '& Planning' : 'Simulator'}</div>
+    <div style="font-family:var(--fm);font-size:12px;color:var(--tx3);margin-bottom:24px;line-height:1.5">${isFutureYear ? 'Click any module below to simulate how different grades would affect your degree outcome.' : 'Set a target grade for your modules to see what average you need on your remaining, unmarked components.'}</div>
+    ${yearTargetSection}
   `;
 
-  yr.modules.forEach(mod => {
+  yr.modules.forEach(mod=>{
     const tg = yr.targetGrades[mod.id] || 70;
     const partial = modPartial(mod, yr.marks) || 0;
     const ew = modEnteredWeight(mod, yr.marks);
@@ -927,36 +1455,130 @@ function buildTarget(yr) {
       }
     }
 
-    html += `
-      <div class="card" style="padding:20px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:12px">
-          <div>
-            <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
-            <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
+    if (isFutureYear) {
+      // Future module: clickable simulation
+      const simGrade = yr.futureModuleGrades ? (yr.futureModuleGrades[mod.id] !== undefined ? yr.futureModuleGrades[mod.id] : 70) : 70;
+      const simImpact = buildFutureModImpact(yr, mod, simGrade);
+      html += `
+        <div class="card future-mod-card" id="futcard-${yr.id}-${mod.id}" style="padding:20px;cursor:pointer" onclick="toggleCard('futcard-${yr.id}-${mod.id}')">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+            <div>
+              <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
+              <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
+              <div style="font-family:var(--fm);font-size:11px;color:var(--tx4);margin-top:2px">${mod.cats} credits · ${mod.components.length} component${mod.components.length!==1?'s':''} · Click to simulate</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-family:var(--fm);font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em">Simulated grade</span>
+              <input type="number" class="inp inp-num" style="width:72px;font-size:15px;font-weight:700;color:${gradeColor(simGrade)}" value="${simGrade}" min="0" max="100" onclick="event.stopPropagation()" onchange="updateFutureGrade('${yr.id}','${mod.id}',this.value)" />
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-family:var(--fm);font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em">Target (%)</span>
-            <input type="number" class="inp inp-num" style="width:72px;font-size:15px;font-weight:700" value="${tg}" min="0" max="100" onchange="updateTarget('${yr.id}','${mod.id}',this.value)" />
+          <div class="mod-body" style="display:none;margin-top:16px;padding-top:16px;border-top:1.5px solid var(--b1)">
+            ${simImpact}
           </div>
-        </div>
-        <div style="font-family:var(--fm);font-size:12px;color:var(--tx4);margin-bottom:12px">Current marked total: ${partial.toFixed(1)} / ${ew} pts</div>
-        ${calcHtml}
-      </div>
-    `;
+        </div>`;
+    } else {
+      html += `
+        <div class="card" style="padding:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:12px">
+            <div>
+              <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
+              <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-family:var(--fm);font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em">Target (%)</span>
+              <input type="number" class="inp inp-num" style="width:72px;font-size:15px;font-weight:700" value="${tg}" min="0" max="100" onchange="updateTarget('${yr.id}','${mod.id}',this.value)" />
+            </div>
+          </div>
+          <div style="font-family:var(--fm);font-size:12px;color:var(--tx4);margin-bottom:12px">Current marked total: ${partial.toFixed(1)} / ${ew} pts</div>
+          ${calcHtml}
+        </div>`;
+    }
   });
 
   return html;
 }
 
-function updateTarget(yid, mid, val) {
+function buildFutureModImpact(yr, mod, simGrade) {
+  // Show how this simulated grade affects the year average and degree overall
+  const totalCatsYr = yr.modules.reduce((s,m)=>s+m.cats,0);
+  
+  // Year mark if this module gets simGrade (others use real marks or simulated)
+  let yearNumerator = simGrade * mod.cats;
+  let yearDenominator = mod.cats;
+  let otherMarks = '';
+  yr.modules.forEach(m => {
+    if (m.id === mod.id) return;
+    const realMark = modTotal(m, yr.marks);
+    const simMark = yr.futureModuleGrades ? yr.futureModuleGrades[m.id] : undefined;
+    const useMark = realMark !== null ? realMark : (simMark !== undefined ? simMark : null);
+    if (useMark !== null) { yearNumerator += useMark * m.cats; yearDenominator += m.cats; }
+  });
+  const projYearMark = yearDenominator > 0 ? yearNumerator / yearDenominator : null;
+
+  // Degree impact
+  const totalW = APP.years.reduce((s,y)=>s+(y.weighting||0),0);
+  let degHtml = '';
+  if (totalW > 0 && projYearMark !== null) {
+    let degNumerator = 0, degDenominator = 0;
+    APP.years.forEach(y => {
+      const w = y.weighting || 0;
+      if (!w) return;
+      if (y.id === yr.id) { degNumerator += projYearMark * w; degDenominator += w; return; }
+      const ym = yearMark(y);
+      if (ym !== null) { degNumerator += ym * w; degDenominator += w; }
+    });
+    const projDeg = degDenominator > 0 ? degNumerator / degDenominator : null;
+    if (projDeg !== null) {
+      degHtml = `<div class="fut-impact-row">
+        <span class="fut-impact-lbl">Projected degree mark</span>
+        <span class="fut-impact-val" style="color:${gradeColor(projDeg)}">${projDeg.toFixed(1)}% · ${gradeClass(projDeg)}</span>
+      </div>`;
+    }
+  }
+
+  // Component breakdown
+  const compRows = mod.components.map(c => {
+    const contribution = (simGrade * c.weight / 100);
+    return `<div class="fut-comp-row">
+      <span class="fut-comp-name">${c.name}</span>
+      <span class="fut-comp-wt">${c.weight}% weight</span>
+      <span class="fut-comp-contrib">+${contribution.toFixed(1)} pts</span>
+    </div>`;
+  }).join('');
+
+  return `<div class="fut-impact-grid">
+    ${projYearMark !== null ? `<div class="fut-impact-row">
+      <span class="fut-impact-lbl">Projected year average</span>
+      <span class="fut-impact-val" style="color:${gradeColor(projYearMark)}">${projYearMark.toFixed(1)}% · ${gradeClass(projYearMark)}</span>
+    </div>` : ''}
+    ${degHtml}
+    <div style="margin-top:12px;font-family:var(--fm);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx4);margin-bottom:6px">Component breakdown at ${simGrade}%</div>
+    ${compRows}
+  </div>`;
+}
+
+function updateFutureGrade(yid, mid, val) {
   const yr = getYear(yid);
-  if(!yr.targetGrades) yr.targetGrades = {};
+  if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   let v = parseFloat(val);
-  if(isNaN(v)) v = 70;
-  yr.targetGrades[mid] = Math.min(100, Math.max(0, v));
+  if (isNaN(v)) v = 70;
+  yr.futureModuleGrades[mid] = Math.min(100, Math.max(0, v));
+  persist();
+  // Re-render the target pane
+  const pane = document.getElementById(`sp-${yid}-target`);
+  if (pane) {
+    const openCards = [...pane.querySelectorAll('.card.open')].map(c => c.id);
+    pane.innerHTML = buildTarget(yr);
+    restoreOpenCards(openCards, '.mod-body');
+  }
+}
+
+function setOverviewTargetAndRefresh(yid, val) {
+  APP.overviewTargetGrade = val;
   persist();
   const pane = document.getElementById(`sp-${yid}-target`);
-  if(pane) pane.innerHTML = buildTarget(yr);
+  if (pane) pane.innerHTML = buildTarget(getYear(yid));
 }
 
 
@@ -978,8 +1600,8 @@ function buildDangerZone() {
     <div class="danger-zone-desc">These actions are <strong style="color:var(--red)">permanent and cannot be undone</strong>.</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn btn-danger" onclick="hardResetAll()">🗑 Hard reset everything</button>
-      <button class="btn btn-ghost btn-sm" onclick="exportData()" style="margin-left:auto">↓ Export backup</button>
-      <button class="btn btn-ghost btn-sm" onclick="importData()">↑ Import backup</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportData()" style="margin-left:auto">↓ Download backup</button>
+      <button class="btn btn-ghost btn-sm" onclick="importData()">↑ Restore backup</button>
     </div>
   </div>`;
 }
@@ -1020,13 +1642,35 @@ function exportData() {
   showToast('Backup downloaded!');
 }
 
+
+function exportDataCSV() {
+  const rows = [['Year', 'Module', 'Code', 'Component', 'Weight (%)', 'Mark']];
+  APP.years.forEach(yr => {
+    yr.modules.forEach(mod => {
+      if (!mod.components.length) {
+        rows.push([yr.label, mod.name, mod.code || '', '—', '—', '—']);
+      } else {
+        mod.components.forEach(c => {
+          const mark = yr.marks[c.id] !== undefined ? yr.marks[c.id] : '';
+          rows.push([yr.label, mod.name, mod.code || '', c.name, c.weight, mark]);
+        });
+      }
+    });
+  });
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'my-grades.csv';
+  a.click();
+}
+
 function importData() {
   const input=document.createElement('input'); input.type='file'; input.accept='.json';
   input.onchange=e=>{
     const file=e.target.files[0]; if(!file)return;
     const reader=new FileReader();
     reader.onload=ev=>{
-      try{const data=JSON.parse(ev.target.result);if(!data.years||!data.settings)throw new Error('Invalid format');if(!confirm('Import this backup? Current data will be replaced.'))return;APP=data;migrateData();persist();renderAll();restoreAppearance();showToast('Data imported!');}
+      try{const data=JSON.parse(ev.target.result);if(!data.years||!data.settings)throw new Error('Invalid format');if(!confirm('Restore this backup? Current data will be replaced.'))return;APP=data;migrateData();persist();renderAll();restoreAppearance();showToast('Backup restored!');}
       catch(err){alert('Could not import: '+err.message);}
     };
     reader.readAsText(file);
@@ -1074,7 +1718,7 @@ function buildChecklist(yr) {
         <span class="mod-name">${m.name}</span>
         <span class="cl-count${done===total&&total>0?' done':''}">${done} / ${total}</span>
         <div class="cl-bar-wrap"><div class="cl-bar-fill" style="width:${fpct}%"></div></div>
-        <button class="icon-btn btn-sm" onclick="event.stopPropagation();openTopicEdit('${yr.id}','${m.id}')" title="Edit topics" style="margin-right:4px">✎</button>
+        <button class="icon-btn btn-sm" aria-label="Edit topics for ${m.name}" onclick="event.stopPropagation();openTopicEdit('${yr.id}','${m.id}')" title="Edit topics" style="margin-right:4px">✎</button>
         <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
       <div class="cl-mod-body" style="display:none"><div class="cl-grid">${items}</div>${modResetBtn}</div>
@@ -1241,10 +1885,10 @@ function cpShowOnboarding(firstRun = false) {
   cpCurrentStep = 0;
   cpSelectedDept = null;
   cpSelectedCourse = null;
-  document.getElementById('cpTitle').textContent = firstRun ? 'Set up your course' : 'Import a course';
+  document.getElementById('cpTitle').textContent = firstRun ? 'Set up your course' : 'Set up my course';
   document.getElementById('cpSub').textContent = firstRun
-    ? 'Import your core modules to set up the website, or continue manually.'
-    : 'Import core modules automatically, or continue setting things up manually.';
+    ? 'Find your course to set up the website automatically, or continue manually.'
+    : 'Find your course automatically, or continue setting things up manually.';
   cpGoStep(0);
   openOverlay('coursePickerOverlay');
 }
@@ -1348,7 +1992,7 @@ function cpRenderPreview() {
 
   let listHtml = '';
   if (!yearMods.length) {
-    listHtml = '<div style="font-family:var(--fm);font-size:12px;color:var(--tx4);padding:8px 0;font-style:italic">No core modules with credits found in the dataset. You can add modules manually after importing.</div>';
+    listHtml = '<div style="font-family:var(--fm);font-size:12px;color:var(--tx4);padding:8px 0;font-style:italic">No core modules with credits found in the dataset. You can add modules manually after setup.</div>';
   } else {
     yearMods.forEach(ym => {
       listHtml += `<div class="cp-preview-yr">${ym.yearLabel}</div>`;
@@ -1364,7 +2008,7 @@ function cpRenderPreview() {
         listHtml += `<div class="cp-preview-mod">
           <span class="cp-preview-code">${m.code}</span>
           <span class="cp-preview-name">${m.name}${splitBadge}${urlLink}</span>
-          <span class="cp-preview-cats">${(m.credits !== null && !isNaN(m.credits)) ? m.credits : 15} CATS</span>
+          <span class="cp-preview-cats">${(m.credits !== null && !isNaN(m.credits)) ? m.credits : 15} credits</span>
           <span class="cp-preview-type">Core</span>
         </div>`;
         // Show assessment components breakdown if available
@@ -1431,10 +2075,14 @@ function cpConfirm() {
       modules: [],
       marks: {},
       checklist: {},
-      targetGrades: {}
+      targetGrades: {},
+      futureModuleGrades: {},
+      weighting: 0
     });
   }
   APP.activeYear = APP.years[0].id;
+  APP.activeOverview = false;
+  APP.lastTab = {};
 
   // Distribute populated years — importing full components from assessment data
   populatedKeys.forEach(yrKey => {
@@ -1492,7 +2140,7 @@ function cpConfirm() {
   closeOverlayDirect('coursePickerOverlay');
   restoreAppearance();
   renderAll();
-  showToast(`✓ ${cpSelectedCourse.course} imported!`);
+  showToast(`✓ ${cpSelectedCourse.course} added!`);
 }
 
 function cpSkip() {
@@ -1508,6 +2156,8 @@ buildModuleDict();
 populateDatalists();
 setupAutoFill();
 loadApp();
+// Default to overview tab on first load
+if (APP.activeOverview === undefined) APP.activeOverview = true;
 restoreAppearance();
 renderAll();
 
