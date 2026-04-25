@@ -148,7 +148,7 @@ const DEFAULT_DATA = {
     tabNames: JSON.parse(JSON.stringify(DEFAULT_TAB_NAMES))
   },
   years: [
-    { id:'y1', label:'Year 1', acyr:'2025/26', modules:[], marks:{}, checklist:{}, targetGrades:{}, futureModuleGrades:{}, futureComponentGrades:{}, weighting:0 }
+    { id:'y1', label:'Year 1', acyr:'2025/26', modules:[], marks:{}, checklist:{}, futureModuleGrades:{}, futureComponentGrades:{}, weighting:0 }
   ],
   activeYear: 'y1',
   activeOverview: false,
@@ -180,7 +180,6 @@ function migrateData() {
   APP.years.forEach(yr => {
     if (!yr.marks)     yr.marks     = {};
     if (!yr.checklist) yr.checklist = {};
-    if (!yr.targetGrades) yr.targetGrades = {};
     if (yr.weighting === undefined) yr.weighting = 0;
     if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
     if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
@@ -486,7 +485,7 @@ function saveYearEdit() {
     const yr = getYear(yeEditId); yr.label=label; yr.acyr=acyr; yr.weighting=weighting;
   } else {
     const nid = makeId();
-    APP.years.push({id:nid,label,acyr,modules:[],marks:{},checklist:{},targetGrades:{},futureModuleGrades:{},futureComponentGrades:{},weighting});
+    APP.years.push({id:nid,label,acyr,modules:[],marks:{},checklist:{},futureModuleGrades:{},futureComponentGrades:{},weighting});
     APP.activeYear = nid;
     APP.activeOverview = false;
   }
@@ -541,7 +540,6 @@ function saveModEdit() {
     }
     yr.modules.push({id:nid, code, name, cats, components, url: dictEntry ? dictEntry.url : ''});
     if (!yr.checklist) yr.checklist={};
-    if (!yr.targetGrades) yr.targetGrades={};
     if (!yr.futureModuleGrades) yr.futureModuleGrades={};
     if (!yr.futureComponentGrades) yr.futureComponentGrades={};
     yr.checklist[nid]={topics:[],done:{}};
@@ -1393,9 +1391,23 @@ function normaliseFutureGrade(val, fallback = 70) {
   return Math.min(100, Math.max(0, v));
 }
 
+function isEnteredMark(val) {
+  return val !== '' && val !== undefined && val !== null && !isNaN(parseFloat(val));
+}
+
+function getModuleMarkForComponent(yr, comp) {
+  if (!yr || !yr.marks || !comp) return null;
+  const mark = yr.marks[comp.id];
+  return isEnteredMark(mark) ? normaliseFutureGrade(mark) : null;
+}
+
 function getFutureComponentGrade(yr, mod, comp) {
   if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
   if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
+
+  const moduleMark = getModuleMarkForComponent(yr, comp);
+  if (moduleMark !== null) return moduleMark;
+
   if (yr.futureComponentGrades[comp.id] !== undefined) {
     return normaliseFutureGrade(yr.futureComponentGrades[comp.id]);
   }
@@ -1416,30 +1428,21 @@ function getFutureModuleGrade(yr, mod) {
 }
 
 function buildTarget(yr) {
-  if (!yr.targetGrades) yr.targetGrades = {};
   if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
-  
+
   if (!yr.modules || !yr.modules.length) {
     return `<div class="tt-empty">No modules yet. Add modules to start exploring target grades.</div>`;
   }
 
-  // Determine if this year is "future" (no marks at all entered)
-  const anyMarks = yr.modules.some(m => m.components.some(c => {
-    const v = yr.marks[c.id];
-    return v !== '' && v !== undefined && v !== null && !isNaN(parseFloat(v));
-  }));
-  const isFutureYear = !anyMarks;
-
-  // Overall target planner for this year
+  const anyModuleMarks = yr.modules.some(m => (m.components || []).some(c => getModuleMarkForComponent(yr, c) !== null));
   const totalW = APP.years.reduce((s,y)=>s+(y.weighting||0),0);
   const targets = getTargetThresholds();
   let sel = APP.overviewTargetGrade !== undefined ? APP.overviewTargetGrade : (targets[0]?.min || 70);
   if (targets.length && !targets.some(t => Number(t.min) === Number(sel))) sel = targets[0].min;
 
   let yearTargetSection = '';
-  if (totalW > 0 && isFutureYear && targets.length) {
-    // Compute what we need from this year
+  if (totalW > 0 && targets.length) {
     let knownSum = 0, unknownW = 0;
     APP.years.forEach(y => {
       const w = y.weighting || 0;
@@ -1447,100 +1450,70 @@ function buildTarget(yr) {
       if (y.id === yr.id) { unknownW += w; return; }
       const ym = yearMark(y);
       if (ym !== null) knownSum += ym * w;
-      else unknownW += w; // other unknown years also share the need
+      else unknownW += w;
     });
-    const neededAvg = totalW > 0 ? (sel * totalW - knownSum) / unknownW : null;
+    const neededAvg = unknownW > 0 ? (sel * totalW - knownSum) / unknownW : null;
     const targetBtns = targets
       .map(t => `<button class="ov-target-btn${Number(sel)===Number(t.min)?' active':''}" style="${Number(sel)===Number(t.min)?`background:${t.color};color:#fff;border-color:${t.color}`:`color:${t.color};border-color:${t.color}44`}" onclick="setOverviewTargetAndRefresh('${yr.id}',${t.min})">${t.label}</button>`).join('');
 
     let needHtml = '';
     if (neededAvg !== null) {
       if (neededAvg <= 0) needHtml = `<div class="ov-target-result ov-target-ok">🎉 You've already secured enough for a <strong>${getThresholdByMin(sel)?.label || sel+'%+'}</strong>!</div>`;
-      else if (neededAvg > 100) needHtml = `<div class="ov-target-result ov-target-warn">⚠ <strong>${getThresholdByMin(sel)?.label || ''}</strong> not achievable with current marks in other years.</div>`;
-      else needHtml = `<div class="ov-target-result">For a <strong>${getThresholdByMin(sel)?.label || ''} (${sel}%+)</strong> overall, you need roughly <strong style="color:${gradeColor(neededAvg)}">${neededAvg.toFixed(1)}%</strong> across all ungraded years.</div>`;
+      else if (neededAvg > 100) needHtml = `<div class="ov-target-result ov-target-warn">⚠ <strong>${getThresholdByMin(sel)?.label || ''}</strong> is not achievable with current marks in other years.</div>`;
+      else needHtml = `<div class="ov-target-result">For a <strong>${getThresholdByMin(sel)?.label || ''} (${sel}%+)</strong> overall, this year / remaining ungraded years need roughly <strong style="color:${gradeColor(neededAvg)}">${neededAvg.toFixed(1)}%</strong>.</div>`;
     }
 
     yearTargetSection = `<div class="ov-target-planner" style="margin-bottom:24px">
-      <div class="ov-section-title">🎯 Degree Target for This Year</div>
-      <div style="font-family:var(--fm);font-size:11px;color:var(--tx3);margin-bottom:12px">Select a target classification to see what you need here.</div>
+      <div class="ov-section-title">🎯 Degree Target</div>
+      <div style="font-family:var(--fm);font-size:11px;color:var(--tx3);margin-bottom:12px">Select a target classification, then adjust the unlocked assessment simulations below.</div>
       <div class="ov-target-btns" style="margin-bottom:12px">${targetBtns}</div>
       ${needHtml}
     </div>`;
   }
 
   let html = `
-    <div style="font-family:var(--fd);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Target Grades ${isFutureYear ? '& Planning' : 'Simulator'}</div>
-    <div style="font-family:var(--fm);font-size:12px;color:var(--tx3);margin-bottom:24px;line-height:1.5">${isFutureYear ? 'Click any module below to simulate module and individual assessment grades, then see how they affect your year and degree outcome.' : 'Set a target grade for your modules to see what average you need on your remaining, unmarked components.'}</div>
+    <div style="font-family:var(--fd);font-size:20px;font-weight:800;color:var(--tx);margin-bottom:8px">Target Grades & Planning</div>
+    <div style="font-family:var(--fm);font-size:12px;color:var(--tx3);margin-bottom:24px;line-height:1.5">
+      Edit the simulated grade for each unmarked assessment. Marks entered in <strong>Modules</strong> are locked here and only change when you update them in Modules.
+    </div>
     ${yearTargetSection}
   `;
 
   yr.modules.forEach(mod=>{
-    const tg = yr.targetGrades[mod.id] || 70;
-    const partial = modPartial(mod, yr.marks) || 0;
+    const projected = getFutureModuleGrade(yr, mod);
+    const realTotal = modTotal(mod, yr.marks);
     const ew = modEnteredWeight(mod, yr.marks);
-    const remW = 100 - ew;
-    
-    let calcHtml = '';
-    if (remW <= 0) {
-      calcHtml = `<div class="tg-result tg-done">Module fully graded. Final mark: <strong style="color:${gradeColor(partial)}">${partial.toFixed(1)}%</strong></div>`;
-    } else {
-      const requiredPoints = tg - partial;
-      const requiredAvg = (requiredPoints / remW) * 100;
-      if (requiredAvg <= 0) {
-         calcHtml = `<div class="tg-result tg-ok">Target achieved! You need 0% on the remaining ${remW}% of the module.</div>`;
-      } else if (requiredAvg > 100) {
-         calcHtml = `<div class="tg-result tg-warn">Target impossible! You need ${requiredAvg.toFixed(1)}% on the remaining ${remW}% of the module.</div>`;
-      } else {
-         calcHtml = `<div class="tg-result">To get <strong>${tg}%</strong> overall, you need an average of <strong style="color:var(--accent-mid)">${requiredAvg.toFixed(1)}%</strong> on the remaining ${remW}% weight.</div>`;
-      }
-    }
+    const lockSummary = realTotal !== null
+      ? 'All assessments locked from Modules'
+      : ew > 0
+        ? `${ew}% locked from Modules · ${100-ew}% simulated`
+        : 'All assessments simulated';
+    const summaryLabel = realTotal !== null ? 'Final module' : anyModuleMarks ? 'Projected module' : 'Simulated module';
 
-    if (isFutureYear) {
-      // Future module: clickable simulation with per-assessment inputs.
-      const simGrade = getFutureModuleGrade(yr, mod);
-      const simImpact = buildFutureModImpact(yr, mod);
-      html += `
-        <div class="card future-mod-card" id="futcard-${yr.id}-${mod.id}" style="padding:20px;cursor:pointer" onclick="toggleCard('futcard-${yr.id}-${mod.id}')">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-            <div>
-              <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
-              <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
-              <div style="font-family:var(--fm);font-size:11px;color:var(--tx4);margin-top:2px">${mod.cats} credits · ${mod.components.length} component${mod.components.length!==1?'s':''} · Click to simulate assessments</div>
-            </div>
-            <div class="fut-module-summary">
-              <span class="fut-module-summary-label">Simulated module</span>
-              <span class="fut-module-summary-value" style="color:${gradeColor(simGrade)}">${simGrade.toFixed(1)}%</span>
-              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            </div>
+    html += `
+      <div class="card future-mod-card" id="futcard-${yr.id}-${mod.id}" style="padding:20px;cursor:pointer" onclick="toggleCard('futcard-${yr.id}-${mod.id}')">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <div>
+            <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
+            <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
+            <div style="font-family:var(--fm);font-size:11px;color:var(--tx4);margin-top:2px">${mod.cats} credits · ${(mod.components || []).length} component${(mod.components || []).length!==1?'s':''} · ${lockSummary}</div>
           </div>
-          <div class="mod-body" style="display:none;margin-top:16px;padding-top:16px;border-top:1.5px solid var(--b1)">
-            ${simImpact}
+          <div class="fut-module-summary">
+            <span class="fut-module-summary-label">${summaryLabel}</span>
+            <span class="fut-module-summary-value" style="color:${gradeColor(projected)}">${projected.toFixed(1)}%</span>
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-        </div>`;
-    } else {
-      html += `
-        <div class="card" style="padding:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:12px">
-            <div>
-              <div style="display:inline-block;font-family:var(--fm);font-size:11px;font-weight:600;color:var(--accent-mid);background:var(--accent-bg);padding:3px 8px;border-radius:6px;border:1px solid var(--accent-border);margin-bottom:6px">${mod.code}</div>
-              <div style="font-family:var(--fd);font-size:15px;font-weight:700">${mod.name}</div>
-            </div>
-            <div style="display:flex;align-items:center;gap:10px">
-              <span style="font-family:var(--fm);font-size:11px;color:var(--tx3);text-transform:uppercase;letter-spacing:.05em">Target (%)</span>
-              <input type="number" class="inp inp-num" style="width:72px;font-size:15px;font-weight:700" value="${tg}" min="0" max="100" onchange="updateTarget('${yr.id}','${mod.id}',this.value)" />
-            </div>
-          </div>
-          <div style="font-family:var(--fm);font-size:12px;color:var(--tx4);margin-bottom:12px">Current marked total: ${partial.toFixed(1)} / ${ew} pts</div>
-          ${calcHtml}
-        </div>`;
-    }
+        </div>
+        <div class="mod-body" style="display:none;margin-top:16px;padding-top:16px;border-top:1.5px solid var(--b1)">
+          ${buildFutureModImpact(yr, mod)}
+        </div>
+      </div>`;
   });
 
   return html;
 }
 
 function buildFutureModImpact(yr, mod) {
-  // Show how simulated assessment grades affect the year average and degree overall.
   if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
 
@@ -1556,7 +1529,6 @@ function buildFutureModImpact(yr, mod) {
   });
   const projYearMark = yearDenominator > 0 ? yearNumerator / yearDenominator : null;
 
-  // Degree impact
   const totalW = APP.years.reduce((s,y)=>s+(y.weighting||0),0);
   let degHtml = '';
   if (totalW > 0 && projYearMark !== null) {
@@ -1577,29 +1549,51 @@ function buildFutureModImpact(yr, mod) {
     }
   }
 
-  const compRows = (mod.components || []).map(c => {
+  const components = mod.components || [];
+  const unlockedComponents = components.filter(c => getModuleMarkForComponent(yr, c) === null);
+  const applyAllHtml = components.length
+    ? `<div class="fut-impact-row">
+      <span class="fut-impact-lbl">Set all unlocked assessments in this module</span>
+      <span class="fut-impact-val fut-apply-all" onclick="event.stopPropagation()">
+        ${unlockedComponents.length
+          ? `<input type="number" class="inp inp-num" style="width:76px;font-size:15px;font-weight:700;color:${gradeColor(simGrade)}" value="${normaliseFutureGrade(yr.futureModuleGrades[mod.id], 70).toFixed(1)}" min="0" max="100" step="0.1" onchange="updateFutureGrade('${yr.id}','${mod.id}',this.value)" />`
+          : `<span class="fut-locked-note">Locked from Modules</span>`}
+      </span>
+    </div>`
+    : `<div class="fut-impact-row">
+      <span class="fut-impact-lbl">Set module simulation</span>
+      <span class="fut-impact-val fut-apply-all" onclick="event.stopPropagation()">
+        <input type="number" class="inp inp-num" style="width:76px;font-size:15px;font-weight:700;color:${gradeColor(simGrade)}" value="${simGrade.toFixed(1)}" min="0" max="100" step="0.1" onchange="updateFutureGrade('${yr.id}','${mod.id}',this.value)" />
+      </span>
+    </div>`;
+
+  const compRows = components.map(c => {
+    const lockedMark = getModuleMarkForComponent(yr, c);
+    const isLocked = lockedMark !== null;
     const compGrade = getFutureComponentGrade(yr, mod, c);
     const contribution = (compGrade * c.weight / 100);
-    return `<div class="fut-comp-row">
+    const controlHtml = isLocked
+      ? `<label class="fut-comp-input-wrap fut-comp-locked" onclick="event.stopPropagation()">
+          <span class="fut-comp-input-label">From Modules</span>
+          <span class="fut-comp-actual" style="color:${gradeColor(compGrade)}">${compGrade.toFixed(1)}%</span>
+        </label>`
+      : `<label class="fut-comp-input-wrap" onclick="event.stopPropagation()">
+          <span class="fut-comp-input-label">Sim mark</span>
+          <input class="inp inp-num fut-comp-input" type="number" min="0" max="100" step="0.1" value="${compGrade.toFixed(1)}" style="color:${gradeColor(compGrade)}" onchange="updateFutureComponentGrade('${yr.id}','${mod.id}','${c.id}',this.value)" />
+        </label>`;
+
+    return `<div class="fut-comp-row ${isLocked ? 'locked' : ''}">
       <div class="fut-comp-main">
         <span class="fut-comp-name">${c.name}</span>
-        <span class="fut-comp-wt">${c.weight}% weight · ${catBadgeHtml(c.category)}</span>
+        <span class="fut-comp-wt">${c.weight}% weight · ${catBadgeHtml(c.category)}${isLocked ? '<span class="fut-lock-badge">Locked</span>' : ''}</span>
       </div>
-      <label class="fut-comp-input-wrap" onclick="event.stopPropagation()">
-        <span class="fut-comp-input-label">Sim mark</span>
-        <input class="inp inp-num fut-comp-input" type="number" min="0" max="100" step="0.1" value="${compGrade.toFixed(1)}" style="color:${gradeColor(compGrade)}" onchange="updateFutureComponentGrade('${yr.id}','${mod.id}','${c.id}',this.value)" />
-      </label>
+      ${controlHtml}
       <span class="fut-comp-contrib">+${contribution.toFixed(1)} pts</span>
     </div>`;
   }).join('') || `<div class="tt-empty">No assessment components yet. Add components in the Modules tab to simulate them individually.</div>`;
 
   return `<div class="fut-impact-grid">
-    <div class="fut-impact-row">
-      <span class="fut-impact-lbl">Set every assessment in this module</span>
-      <span class="fut-impact-val fut-apply-all" onclick="event.stopPropagation()">
-        <input type="number" class="inp inp-num" style="width:76px;font-size:15px;font-weight:700;color:${gradeColor(simGrade)}" value="${simGrade.toFixed(1)}" min="0" max="100" step="0.1" onchange="updateFutureGrade('${yr.id}','${mod.id}',this.value)" />
-      </span>
-    </div>
+    ${applyAllHtml}
     ${projYearMark !== null ? `<div class="fut-impact-row">
       <span class="fut-impact-lbl">Projected year average</span>
       <span class="fut-impact-val" style="color:${gradeColor(projYearMark)}">${projYearMark.toFixed(1)}% · ${gradeClass(projYearMark)}</span>
@@ -1629,8 +1623,16 @@ function updateFutureGrade(yid, mid, val) {
   if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
   const v = normaliseFutureGrade(val, 70);
-  yr.futureModuleGrades[mid] = v;
-  (mod.components || []).forEach(c => { yr.futureComponentGrades[c.id] = v; });
+
+  if (!mod.components || !mod.components.length) {
+    yr.futureModuleGrades[mid] = v;
+  } else {
+    (mod.components || []).forEach(c => {
+      if (getModuleMarkForComponent(yr, c) === null) yr.futureComponentGrades[c.id] = v;
+    });
+    yr.futureModuleGrades[mid] = v;
+  }
+
   persist();
   rerenderTargetPane(yid);
 }
@@ -1638,11 +1640,15 @@ function updateFutureGrade(yid, mid, val) {
 function updateFutureComponentGrade(yid, mid, cid, val) {
   const yr = getYear(yid);
   const mod = yr ? yr.modules.find(m => m.id === mid) : null;
-  if (!yr || !mod) return;
+  const comp = mod ? (mod.components || []).find(c => c.id === cid) : null;
+  if (!yr || !mod || !comp) return;
+  if (getModuleMarkForComponent(yr, comp) !== null) {
+    rerenderTargetPane(yid);
+    return;
+  }
   if (!yr.futureModuleGrades) yr.futureModuleGrades = {};
   if (!yr.futureComponentGrades) yr.futureComponentGrades = {};
   yr.futureComponentGrades[cid] = normaliseFutureGrade(val, 70);
-  yr.futureModuleGrades[mid] = normaliseFutureGrade(getFutureModuleGrade(yr, mod), 70);
   persist();
   rerenderTargetPane(yid);
 }
@@ -1687,11 +1693,13 @@ function onMark(yid, compId, el) {
   const ttp=document.getElementById(`sp-${yid}-timetable`);
   const tgt=document.getElementById(`sp-${yid}-target`);
   const openCards=sp?[...sp.querySelectorAll('.card.open')].map(c=>c.id):[];
+  const targetOpenCards=tgt?[...tgt.querySelectorAll('.card.open')].map(c=>c.id):[];
   if(sp)  sp.innerHTML=buildModules(yr);
   if(dsp) dsp.innerHTML=buildDashboard(yr);
   if(ttp) ttp.innerHTML=buildTimetable(yr);
   if(tgt) tgt.innerHTML=buildTarget(yr);
   restoreOpenCards(openCards,'.mod-body');
+  restoreOpenCards(targetOpenCards,'.mod-body');
   renderHeader();
 }
 
@@ -2148,7 +2156,6 @@ function cpConfirm() {
       modules: [],
       marks: {},
       checklist: {},
-      targetGrades: {},
       futureModuleGrades: {},
       futureComponentGrades: {},
       weighting: 0

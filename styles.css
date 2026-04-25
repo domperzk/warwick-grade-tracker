@@ -366,12 +366,6 @@ body.sidebar-is-open { overflow: hidden; }
 .modal-mark-lbl { font-family:var(--fd); font-size:15px; font-weight:800; border-bottom:1.5px solid var(--b1); padding-bottom:8px; margin-bottom:12px; color:var(--tx); }
 .modal-mark-big { font-family:var(--fd); font-size:36px; font-weight:800; letter-spacing:-0.03em; line-height:1; }
 
-/* ── TARGET GRADES ── */
-.tg-result { font-family:var(--fm); font-size:13px; color:var(--tx2); padding:12px 16px; background:var(--s2); border-radius:var(--r-md); border:1px dashed var(--b2); }
-.tg-ok { background:var(--gnbg); border-color:var(--gn3); color:var(--gn); }
-.tg-warn { background:var(--redbg); border-color:var(--red3); color:var(--red); }
-.tg-done { background:var(--bg); border-color:var(--b2); color:var(--tx2); }
-
 /* ── RESET ZONE ── */
 .reset-zone { margin-top:40px; padding:24px; border:2px dashed var(--b2); border-radius:var(--r-xl); background:var(--bg); }
 .reset-zone-title { font-family:var(--fd); font-size:16px; font-weight:800; color:var(--tx2); margin-bottom:16px; display:flex; align-items:center; gap:8px; }
@@ -527,6 +521,19 @@ html[data-density="compact"] .inp { padding: 3px 6px; font-size: 11px; }
 .fut-comp-input-label { font-family:var(--fm); font-size:9px; color:var(--tx4); text-transform:uppercase; letter-spacing:.05em; white-space:nowrap; }
 .fut-comp-input { width:68px; font-weight:700; }
 .fut-comp-contrib { font-family: var(--fd); font-size: 12px; font-weight: 700; color: var(--accent-mid); white-space: nowrap; }
+.fut-comp-row.locked { background: var(--gnbg); border-color: var(--gn3); }
+.fut-comp-locked { background: var(--gnbg); border-color: var(--gn3); }
+.fut-comp-actual { font-family: var(--fd); font-size: 13px; font-weight: 800; white-space: nowrap; }
+.fut-lock-badge, .fut-locked-note {
+  font-family: var(--fm);
+  font-size: 9px;
+  color: var(--gn);
+  background: var(--gnbg);
+  border: 1px solid var(--gn3);
+  border-radius: var(--r-pill);
+  padding: 2px 7px;
+  white-space: nowrap;
+}
 @media(max-width:600px) {
   .fut-module-summary { width:100%; justify-content:space-between; }
   .fut-impact-row, .fut-components-header { flex-direction:column; align-items:flex-start; }
