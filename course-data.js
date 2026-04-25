@@ -3002,37 +3002,6 @@ window.WARWICK_COURSES = [
     }
   },
   {
-    "course": "Sign in » warwick.ac.uk",
-    "url": "https://warwick.ac.uk/study/undergraduate/courses/ba-history-part-time",
-    "department": "University of Warwick",
-    "qualification": "Bachelor's Degree",
-    "duration": "3 years full-time",
-    "ucas": "",
-    "years": {
-      "Year 1": {
-        "core": []
-      },
-      "Year 2": {
-        "core": []
-      },
-      "Year 3": {
-        "core": []
-      },
-      "Year 4": {
-        "core": []
-      },
-      "Year 5": {
-        "core": []
-      },
-      "Intermediate Year": {
-        "core": []
-      },
-      "Final Year": {
-        "core": []
-      }
-    }
-  },
-  {
     "course": "History and Philosophy BA",
     "url": "https://warwick.ac.uk/study/undergraduate/courses/ba-history-philosophy",
     "department": "Department of History",
