@@ -509,14 +509,31 @@ html[data-density="compact"] .inp { padding: 3px 6px; font-size: 11px; }
 /* ── FUTURE MODULE PLANNING ── */
 .future-mod-card { transition: all var(--t-fast) var(--ease); }
 .future-mod-card:hover { border-color: var(--accent-border); }
+.fut-module-summary { display:flex; align-items:center; gap:10px; background:var(--s2); border:1.5px solid var(--b1); border-radius:var(--r-md); padding:8px 12px; }
+.fut-module-summary-label { font-family:var(--fm); font-size:10px; color:var(--tx3); text-transform:uppercase; letter-spacing:.05em; white-space:nowrap; }
+.fut-module-summary-value { font-family:var(--fd); font-size:18px; font-weight:800; line-height:1; white-space:nowrap; }
 .fut-impact-grid { display: flex; flex-direction: column; gap: 10px; }
 .fut-impact-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; background: var(--s2); border: 1.5px solid var(--b1); border-radius: var(--r-md); }
 .fut-impact-lbl { font-family: var(--fm); font-size: 11px; color: var(--tx3); text-transform: uppercase; letter-spacing: .05em; }
 .fut-impact-val { font-family: var(--fd); font-size: 16px; font-weight: 800; }
-.fut-comp-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: var(--s1); border: 1px solid var(--b1); border-radius: var(--r-sm); }
-.fut-comp-name { flex: 1; font-family: var(--fm); font-size: 11px; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fut-comp-wt { font-family: var(--fm); font-size: 10px; color: var(--tx4); white-space: nowrap; }
+.fut-apply-all { display:flex; align-items:center; gap:6px; }
+.fut-components-header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:4px; font-family:var(--fm); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--tx4); }
+.fut-components-header strong { font-family:var(--fd); font-size:14px; letter-spacing:0; text-transform:none; }
+.fut-comp-row { display: grid; grid-template-columns:minmax(0,1fr) auto auto; align-items: center; gap: 10px; padding: 9px 12px; background: var(--s1); border: 1px solid var(--b1); border-radius: var(--r-sm); }
+.fut-comp-main { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.fut-comp-name { font-family: var(--fm); font-size: 11px; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fut-comp-wt { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-family: var(--fm); font-size: 10px; color: var(--tx4); }
+.fut-comp-input-wrap { display:flex; align-items:center; gap:6px; background:var(--s2); border:1px solid var(--b1); border-radius:var(--r-sm); padding:4px 6px; cursor:default; }
+.fut-comp-input-label { font-family:var(--fm); font-size:9px; color:var(--tx4); text-transform:uppercase; letter-spacing:.05em; white-space:nowrap; }
+.fut-comp-input { width:68px; font-weight:700; }
 .fut-comp-contrib { font-family: var(--fd); font-size: 12px; font-weight: 700; color: var(--accent-mid); white-space: nowrap; }
+@media(max-width:600px) {
+  .fut-module-summary { width:100%; justify-content:space-between; }
+  .fut-impact-row, .fut-components-header { flex-direction:column; align-items:flex-start; }
+  .fut-comp-row { grid-template-columns:1fr; align-items:stretch; }
+  .fut-comp-input-wrap { justify-content:space-between; }
+  .fut-comp-contrib { text-align:right; }
+}
 
 /* ── AUTOSAVE ── */
 .autosave-indicator {
